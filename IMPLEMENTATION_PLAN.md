@@ -1,0 +1,610 @@
+# Implementation Plan: Go-Based Multitenant API Gateway
+
+## 1. Purpose
+
+This document converts the product and technical designs into a practical build plan.
+
+The goal is to build a Go-based, multitenant, finance-focused API gateway without depending on gateway runtimes such as Kong, APISIX, Tyk, KrakenD, or Envoy.
+
+The gateway should start with REST and ISO8583 support, but the implementation must use a protocol adapter model so SOAP/XML, gRPC, GraphQL, webhooks, message queues, files, and proprietary TCP protocols can be added later.
+
+## 2. Implementation Principles
+
+- Build the gateway runtime in Go.
+- Keep the data plane independent from the control plane.
+- Keep request processing fast and predictable.
+- Use tenant-aware configuration everywhere.
+- Use protocol adapters instead of hard-coded protocol pairs.
+- Use a canonical message model between protocol adapters and transformations.
+- Treat billing events as first-class data, not logs.
+- Mask sensitive financial data by default.
+- Prefer simple, testable interfaces before adding advanced features.
+
+## 3. Target Repository Structure
+
+```text
+cmd/
+  gateway/
+    main.go
+  control-plane/
+    main.go
+  billing-worker/
+    main.go
+
+internal/
+  app/
+    gateway/
+    controlplane/
+    billingworker/
+
+  config/
+  storage/
+  tenant/
+  auth/
+  rbac/
+  gateway/
+    listener/
+    middleware/
+    router/
+    policy/
+    upstream/
+  protocol/
+    adapter.go
+    canonical.go
+    registry.go
+    rest/
+    iso8583/
+    soap/
+  transform/
+  ratelimit/
+  quota/
+  billing/
+  audit/
+  observability/
+
+pkg/
+  errors/
+  ids/
+  masking/
+```
+
+## 4. Milestone 1: Project Foundation
+
+Goal: create a clean Go service foundation.
+
+Tasks:
+
+- Initialize Go module.
+- Add basic `cmd/gateway/main.go`.
+- Add configuration loader.
+- Add structured logger.
+- Add graceful shutdown.
+- Add health endpoint.
+- Add request ID middleware.
+- Add basic test setup.
+
+Expected result:
+
+- `go test ./...` runs.
+- `go run ./cmd/gateway` starts an HTTP server.
+- `GET /healthz` returns healthy status.
+
+## 5. Milestone 2: Tenant-Aware Routing
+
+Goal: route REST traffic using tenant-aware route configuration.
+
+Tasks:
+
+- Create tenant model.
+- Create API product model.
+- Create route model.
+- Implement in-memory route registry.
+- Match route by tenant, host, method, and path.
+- Add route status: draft, active, disabled.
+- Add route timeout configuration.
+
+Initial structs:
+
+```go
+type Tenant struct {
+    ID     string
+    Name   string
+    Status string
+}
+
+type Route struct {
+    ID               string
+    TenantID         string
+    APIProductID     string
+    InboundProtocol  string
+    OutboundProtocol string
+    Method           string
+    Path             string
+    UpstreamRef      string
+    TemplateRef      string
+    TimeoutMs        int
+    Status           string
+}
+```
+
+Expected result:
+
+- Gateway can resolve a route for a tenant.
+- Unknown routes return `404`.
+- Disabled routes return `404` or `403` based on policy.
+
+## 6. Milestone 3: Authentication and Tenant Resolution
+
+Goal: resolve tenant from credentials and reject unauthenticated traffic.
+
+Tasks:
+
+- Implement API key model.
+- Store only hashed API keys.
+- Add API key lookup.
+- Resolve tenant from API key.
+- Attach tenant ID, consumer ID, and credential ID to request context.
+- Add credential statuses: active, suspended, revoked.
+
+Authentication behavior:
+
+- Missing credential returns `401`.
+- Invalid credential returns `401`.
+- Suspended credential returns `403`.
+- Revoked credential returns `403`.
+
+Expected result:
+
+- REST requests cannot reach routes without valid credentials.
+- Tenant cannot access another tenant route using its credential.
+
+## 7. Milestone 4: REST Proxy Runtime
+
+Goal: support REST inbound to REST outbound.
+
+Tasks:
+
+- Implement REST protocol adapter.
+- Implement REST upstream client.
+- Forward allowed headers.
+- Strip hop-by-hop headers.
+- Apply route timeout.
+- Return upstream response body and status.
+- Add upstream latency metric.
+
+REST adapter responsibilities:
+
+- Decode HTTP request into canonical message.
+- Encode canonical response into HTTP response.
+- Call REST upstream from canonical message.
+
+Expected result:
+
+- Gateway can proxy REST requests to a REST backend.
+- Gateway emits request logs and metrics.
+
+## 8. Milestone 5: Protocol Adapter Interface
+
+Goal: make protocol support extensible before adding more protocols.
+
+Tasks:
+
+- Create `ProtocolAdapter` interface.
+- Create `UpstreamAdapter` interface.
+- Create adapter registry.
+- Register REST adapter.
+- Add source and target protocol fields to routes.
+- Make gateway route execution use adapters instead of direct REST logic.
+
+Interfaces:
+
+```go
+type ProtocolAdapter interface {
+    Name() string
+    Decode(ctx context.Context, req InboundRequest) (CanonicalMessage, error)
+    Encode(ctx context.Context, msg CanonicalMessage) (OutboundResponse, error)
+}
+
+type UpstreamAdapter interface {
+    Name() string
+    Call(ctx context.Context, target UpstreamTarget, msg CanonicalMessage) (CanonicalMessage, error)
+}
+```
+
+Expected result:
+
+- REST to REST still works.
+- Adding ISO8583 does not require rewriting gateway middleware.
+
+## 9. Milestone 6: Canonical Message Model
+
+Goal: normalize protocol payloads into a shared internal message.
+
+Tasks:
+
+- Create canonical message struct.
+- Add metadata fields: tenant, route, consumer, source protocol, target protocol.
+- Add generic fields map.
+- Add raw payload reference.
+- Add sensitive key list.
+- Add helper functions for masking.
+
+Canonical message:
+
+```go
+type CanonicalMessage struct {
+    TenantID       string
+    ConsumerID     string
+    APIProductID   string
+    RouteID        string
+    SourceProtocol string
+    TargetProtocol string
+    Operation      string
+    Headers        map[string]string
+    Fields         map[string]any
+    RawRef         string
+    SensitiveKeys  []string
+}
+```
+
+Expected result:
+
+- REST adapter can convert requests and responses through canonical messages.
+- Transformation engine can work against canonical messages.
+
+## 10. Milestone 7: Transformation Engine
+
+Goal: transform canonical messages using tenant-owned templates.
+
+Tasks:
+
+- Define transformation template model.
+- Support template versioning.
+- Support published and draft status.
+- Implement field mapping.
+- Implement default values.
+- Implement simple functions: amount formatting, currency conversion, date formatting.
+- Implement validation before publishing a template.
+- Implement dry-run transformation test.
+
+Template example:
+
+```yaml
+name: card-authorization-v1
+sourceProtocol: rest
+targetProtocol: iso8583
+request:
+  fields:
+    transactionType: "$.transactionType"
+    amount: "$.amount"
+    currency: "$.currency"
+    terminalId: "$.terminalId"
+response:
+  fields:
+    responseCode: "$.responseCode"
+    authorizationCode: "$.authorizationCode"
+```
+
+Expected result:
+
+- Gateway can apply a configured transformation before calling upstream.
+- Invalid templates are rejected before publish.
+
+## 11. Milestone 8: ISO8583 Adapter
+
+Goal: support REST to ISO8583 and ISO8583 to REST.
+
+Tasks:
+
+- Create ISO8583 profile model.
+- Implement field definitions.
+- Support fixed fields, LLVAR, and LLLVAR.
+- Support bitmap handling.
+- Support length header configuration.
+- Implement pack and unpack logic.
+- Implement ISO8583 TCP upstream client.
+- Implement ISO8583 inbound TCP listener.
+- Map ISO8583 messages to canonical messages.
+- Map canonical messages to ISO8583 messages.
+
+Expected result:
+
+- REST request can be transformed into ISO8583 and sent to a TCP upstream.
+- ISO8583 response can be transformed back into REST JSON.
+- ISO8583 inbound message can be transformed to REST upstream call.
+
+## 12. Milestone 9: Policy Engine
+
+Goal: execute shared gateway policies consistently across protocols.
+
+Tasks:
+
+- Define request pipeline.
+- Implement IP allowlist.
+- Implement request size limit.
+- Implement rate limit policy.
+- Implement quota policy.
+- Implement schema validation placeholder.
+- Implement policy error mapping.
+
+Policy order:
+
+1. Request ID.
+2. Tenant resolution.
+3. Authentication.
+4. Authorization.
+5. IP allowlist.
+6. Request size validation.
+7. Rate limit.
+8. Quota check.
+9. Protocol decode.
+10. Transformation.
+11. Upstream call.
+12. Response transformation.
+13. Protocol encode.
+14. Metrics.
+15. Billing event.
+
+Expected result:
+
+- REST and ISO8583 routes use the same policy pipeline.
+- Rate limit and quota behavior is tenant-aware.
+
+## 13. Milestone 10: Billing Metering
+
+Goal: produce reliable tenant-scoped usage events.
+
+Tasks:
+
+- Define usage event schema.
+- Emit usage event for every request attempt.
+- Include tenant, consumer, API, route, protocol, status, latency, and billable flag.
+- Store usage events.
+- Add durable outbox if direct write fails.
+- Build billing aggregation worker.
+- Generate billing summaries per tenant and billing period.
+
+Usage event fields:
+
+```text
+event_id
+tenant_id
+consumer_id
+api_product_id
+route_id
+source_protocol
+target_protocol
+status
+http_status
+upstream_status
+latency_ms
+billable
+occurred_at
+```
+
+Expected result:
+
+- Billing summaries can be generated from raw usage events.
+- Billing aggregation can be replayed.
+
+## 14. Milestone 11: Control Plane API
+
+Goal: manage tenants, routes, credentials, templates, adapters, and billing configuration.
+
+Tasks:
+
+- Create admin HTTP service.
+- Add tenant CRUD.
+- Add API product CRUD.
+- Add route CRUD.
+- Add credential create, rotate, revoke.
+- Add transformation template CRUD and publish.
+- Add ISO8583 profile CRUD.
+- Add protocol adapter config CRUD.
+- Add billing plan CRUD.
+- Add usage and billing summary read APIs.
+- Add audit log read API.
+
+Expected result:
+
+- Gateway configuration can be managed through APIs instead of hard-coded files.
+- Every admin change writes an audit event.
+
+## 15. Milestone 12: Storage Layer
+
+Goal: persist configuration, audit logs, and billing data.
+
+Tasks:
+
+- Add PostgreSQL migrations.
+- Add repository interfaces.
+- Add repository implementations.
+- Add transaction handling.
+- Add tenant-scoped query helpers.
+- Add indexes for route lookup and billing aggregation.
+- Add integration tests with PostgreSQL.
+
+Initial tables:
+
+- `tenants`
+- `api_products`
+- `routes`
+- `credentials`
+- `protocol_adapter_configs`
+- `iso8583_profiles`
+- `transformation_templates`
+- `rate_limit_policies`
+- `quota_policies`
+- `billing_plans`
+- `usage_events`
+- `billing_summaries`
+- `audit_logs`
+- `config_versions`
+
+Expected result:
+
+- Control plane persists configuration.
+- Gateway can load active configuration.
+
+## 16. Milestone 13: Config Reload
+
+Goal: update gateway runtime configuration without restarting the gateway.
+
+Tasks:
+
+- Add config snapshot model.
+- Add config version tracking.
+- Add periodic config reload.
+- Keep last known good config.
+- Reject invalid config snapshots.
+- Add route/template/profile version references.
+
+Expected result:
+
+- Admin updates can be picked up by gateway instances.
+- Bad config does not break live traffic.
+
+## 17. Milestone 14: Observability and Audit
+
+Goal: make the gateway operable in finance environments.
+
+Tasks:
+
+- Add structured JSON logs.
+- Add OpenTelemetry tracing.
+- Add Prometheus metrics.
+- Add tenant ID and route ID to logs.
+- Add sensitive data masking.
+- Add audit event writer.
+- Add dashboard metric names.
+
+Required metrics:
+
+- Request count.
+- Request latency.
+- Upstream latency.
+- Transformation latency.
+- Authentication failures.
+- Rate limit rejects.
+- Quota rejects.
+- Protocol adapter errors.
+- ISO8583 timeouts.
+- Billing event failures.
+
+Expected result:
+
+- Operators can trace traffic by tenant, request ID, route, and protocol.
+
+## 18. Milestone 15: SOAP/XML Proof Adapter
+
+Goal: prove the gateway is not limited to REST and ISO8583.
+
+Tasks:
+
+- Add SOAP/XML outbound adapter.
+- Support SOAP envelope template.
+- Support XML namespace configuration.
+- Support XML response path extraction.
+- Add REST to SOAP/XML integration test.
+
+Expected result:
+
+- One non-REST, non-ISO8583 adapter works through the same route, policy, transformation, billing, and observability pipeline.
+
+## 19. Testing Plan
+
+Unit tests:
+
+- Route matching.
+- Tenant resolution.
+- API key hashing.
+- Credential status handling.
+- Adapter registry.
+- Canonical message mapping.
+- Transformation templates.
+- ISO8583 packing and unpacking.
+- PAN masking.
+- Billing event creation.
+
+Integration tests:
+
+- REST to REST.
+- REST to ISO8583.
+- ISO8583 to REST.
+- REST to SOAP/XML.
+- Rate limit exceeded.
+- Quota exceeded.
+- Tenant isolation.
+- Billing aggregation.
+- Config reload.
+
+Load tests:
+
+- REST proxy throughput.
+- REST to ISO8583 latency.
+- ISO8583 TCP connection behavior.
+- Billing event write throughput.
+
+## 20. First Coding Sprint
+
+Recommended first sprint scope:
+
+1. Initialize Go module.
+2. Create `cmd/gateway`.
+3. Add health endpoint.
+4. Add graceful shutdown.
+5. Add request ID middleware.
+6. Add in-memory tenant and route config.
+7. Add API key authentication with hashed keys.
+8. Add REST to REST proxy.
+9. Add unit tests for route matching and authentication.
+
+Sprint done criteria:
+
+- Gateway starts locally.
+- Health endpoint works.
+- A configured API key maps to a tenant.
+- A REST route proxies to a mock upstream.
+- Unauthorized request is rejected.
+- `go test ./...` passes.
+
+## 21. Build Order Summary
+
+Recommended order:
+
+1. Gateway foundation.
+2. Tenant-aware routing.
+3. Authentication.
+4. REST proxy.
+5. Protocol adapter interface.
+6. Canonical message model.
+7. Transformation engine.
+8. ISO8583 adapter.
+9. Shared policy engine.
+10. Billing metering.
+11. Control plane API.
+12. PostgreSQL storage.
+13. Config reload.
+14. Observability and audit.
+15. SOAP/XML proof adapter.
+
+## 22. Definition of MVP Complete
+
+The MVP is complete when:
+
+- A platform admin can create a tenant.
+- A tenant can create credentials.
+- A tenant can configure an API product and route.
+- REST to REST routing works.
+- REST to ISO8583 transformation works.
+- ISO8583 to REST transformation works.
+- At least one additional adapter proof works, preferably REST to SOAP/XML.
+- Tenant isolation is enforced.
+- Rate limits and quotas are enforced.
+- Usage events are recorded.
+- Billing summaries are generated.
+- Sensitive fields are masked.
+- Audit logs are written for admin changes.
+- Gateway config can reload without restart.
+- Core integration tests pass.
+
