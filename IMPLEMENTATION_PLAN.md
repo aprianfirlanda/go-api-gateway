@@ -8,6 +8,8 @@ The goal is to build a Go-based, multitenant, finance-focused API gateway withou
 
 The gateway should start with REST and ISO8583 support, but the implementation must use a protocol adapter model so SOAP/XML, gRPC, GraphQL, webhooks, message queues, files, and proprietary TCP protocols can be added later.
 
+Technology choices are locked in [TECHNOLOGY_DECISIONS.md](TECHNOLOGY_DECISIONS.md). Copy-paste implementation prompts are listed in [SPRINT_PROMPTS.md](SPRINT_PROMPTS.md).
+
 ## 2. Implementation Principles
 
 - Build the gateway runtime in Go.
