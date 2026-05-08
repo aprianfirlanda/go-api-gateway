@@ -545,27 +545,304 @@ Load tests:
 - ISO8583 TCP connection behavior.
 - Billing event write throughput.
 
-## 20. First Coding Sprint
+## 20. Sprint Roadmap
 
-Recommended first sprint scope:
+Use these sprint names when asking for implementation work.
+
+Example prompt:
+
+```text
+Implement Sprint 1 from IMPLEMENTATION_PLAN.md. Add tests and run them.
+```
+
+### Sprint 1: Gateway Foundation
+
+Goal: create the smallest working Go gateway service.
+
+Scope:
 
 1. Initialize Go module.
 2. Create `cmd/gateway`.
 3. Add health endpoint.
 4. Add graceful shutdown.
 5. Add request ID middleware.
-6. Add in-memory tenant and route config.
-7. Add API key authentication with hashed keys.
-8. Add REST to REST proxy.
-9. Add unit tests for route matching and authentication.
+6. Add basic config loading.
+7. Add structured logging.
+8. Add unit tests for health and request ID behavior.
 
 Sprint done criteria:
 
 - Gateway starts locally.
 - Health endpoint works.
+- Readiness endpoint works.
+- Request ID is assigned when missing.
+- `go test ./...` passes.
+
+### Sprint 2: Tenant Routing and Authentication
+
+Goal: add tenant-aware route matching and API key authentication.
+
+Scope:
+
+1. Add tenant model.
+2. Add API product model.
+3. Add route model.
+4. Add in-memory route registry.
+5. Match route by tenant, host, method, and path.
+6. Add API key credential model.
+7. Hash and verify API keys.
+8. Resolve tenant and consumer from API key.
+9. Reject unauthorized requests.
+10. Add unit tests for route matching and authentication.
+
+Sprint done criteria:
+
 - A configured API key maps to a tenant.
-- A REST route proxies to a mock upstream.
-- Unauthorized request is rejected.
+- Unknown API key returns `401`.
+- Suspended or revoked credential returns `403`.
+- Tenant A credential cannot access Tenant B route.
+- Active route can be matched by host, method, and path.
+- `go test ./...` passes.
+
+### Sprint 3: REST Proxy
+
+Goal: support REST inbound to REST upstream routing.
+
+Scope:
+
+1. Add upstream model.
+2. Add REST upstream client.
+3. Add REST proxy handler.
+4. Forward allowed headers.
+5. Strip hop-by-hop headers.
+6. Apply route timeout.
+7. Return upstream status and body.
+8. Add integration test with mock REST upstream.
+
+Sprint done criteria:
+
+- A REST request proxies to a mock upstream.
+- Route timeout is enforced.
+- Unauthorized requests do not reach upstream.
+- Hop-by-hop headers are stripped.
+- `go test ./...` passes.
+
+### Sprint 4: Protocol Adapter Foundation
+
+Goal: introduce adapter interfaces and canonical messages before adding more protocols.
+
+Scope:
+
+1. Add `ProtocolAdapter` interface.
+2. Add `UpstreamAdapter` interface.
+3. Add adapter registry.
+4. Add canonical message model.
+5. Move REST handling behind REST adapter.
+6. Keep REST to REST behavior working.
+7. Add tests for adapter registry and canonical mapping.
+
+Sprint done criteria:
+
+- REST adapter is registered.
+- Gateway route execution uses adapter interfaces.
+- REST to REST still works.
+- Canonical message can represent REST request and response.
+- `go test ./...` passes.
+
+### Sprint 5: Transformation Engine MVP
+
+Goal: add the first template-driven transformation engine.
+
+Scope:
+
+1. Add transformation template model.
+2. Add field mapping.
+3. Add static values.
+4. Add basic functions: `formatAmount`, `currencyNumeric`, `nowMMddHHmmss`, `generateStan`, `maskPan`.
+5. Add template validation.
+6. Add dry-run execution.
+7. Add masking for sensitive fields.
+
+Sprint done criteria:
+
+- Template can transform canonical request fields.
+- Invalid template returns validation errors.
+- Dry-run output masks sensitive fields.
+- Transformation tests cover missing fields and function errors.
+- `go test ./...` passes.
+
+### Sprint 6: ISO8583 Outbound
+
+Goal: support REST to ISO8583.
+
+Scope:
+
+1. Add ISO8583 profile model.
+2. Add ISO8583 packer for fixed, LLVAR, and LLLVAR fields.
+3. Add bitmap handling.
+4. Add length header handling.
+5. Add ISO8583 TCP upstream client.
+6. Transform REST canonical message to ISO8583 canonical shape.
+7. Send ISO8583 request and parse response.
+8. Add mock ISO8583 upstream integration test.
+
+Sprint done criteria:
+
+- REST request can produce ISO8583 message.
+- ISO8583 message respects profile field definitions.
+- Mock ISO8583 upstream receives expected fields.
+- ISO8583 response returns REST JSON.
+- `go test ./...` passes.
+
+### Sprint 7: ISO8583 Inbound
+
+Goal: support ISO8583 to REST.
+
+Scope:
+
+1. Add TCP listener for ISO8583 inbound messages.
+2. Resolve tenant from listener profile.
+3. Decode ISO8583 request.
+4. Transform ISO8583 canonical message to REST canonical shape.
+5. Call REST upstream.
+6. Transform REST response to ISO8583 response.
+7. Add integration test for ISO8583 inbound flow.
+
+Sprint done criteria:
+
+- Gateway accepts ISO8583 TCP request.
+- Gateway calls REST upstream.
+- Gateway returns ISO8583 response.
+- Malformed ISO8583 message is rejected safely.
+- `go test ./...` passes.
+
+### Sprint 8: Policy Engine
+
+Goal: add shared policies for runtime traffic.
+
+Scope:
+
+1. Add policy pipeline.
+2. Add IP allowlist.
+3. Add request size limit.
+4. Add rate limit interface.
+5. Add in-memory rate limiter for MVP.
+6. Add quota policy interface.
+7. Add policy error mapping.
+
+Sprint done criteria:
+
+- Policies run in deterministic order.
+- Rate-limited request returns `429`.
+- Blocked IP is rejected.
+- Oversized request is rejected.
+- REST and ISO8583 routes use the same policy pipeline.
+- `go test ./...` passes.
+
+### Sprint 9: Billing Metering
+
+Goal: emit usage events and generate basic billing summaries.
+
+Scope:
+
+1. Add usage event model.
+2. Emit usage event for every request attempt.
+3. Add billable flag calculation.
+4. Store usage events in memory or initial storage abstraction.
+5. Add billing plan model.
+6. Add billing summary aggregation.
+7. Add tests for overage calculation.
+
+Sprint done criteria:
+
+- Successful request emits usage event.
+- Rejected request emits non-billable usage event.
+- Timeout event can be marked billable when upstream was called.
+- Billing summary calculates overage.
+- `go test ./...` passes.
+
+### Sprint 10: Control Plane MVP
+
+Goal: add admin APIs for managing runtime configuration.
+
+Scope:
+
+1. Add `cmd/control-plane`.
+2. Add tenant APIs.
+3. Add API product APIs.
+4. Add route APIs.
+5. Add upstream APIs.
+6. Add credential APIs.
+7. Add transformation template APIs.
+8. Add audit event writes for admin changes.
+
+Sprint done criteria:
+
+- Tenant can be created through API.
+- Route can be created through API.
+- Credential can be created and returned once.
+- Admin changes write audit events.
+- `go test ./...` passes.
+
+### Sprint 11: PostgreSQL Storage
+
+Goal: replace in-memory configuration with PostgreSQL-backed repositories.
+
+Scope:
+
+1. Add migration tool.
+2. Add initial migrations.
+3. Add repository interfaces.
+4. Add PostgreSQL repository implementations.
+5. Add tenant-scoped query helpers.
+6. Add integration tests for repositories.
+
+Sprint done criteria:
+
+- Control plane persists tenants, routes, credentials, templates, and upstreams.
+- Tenant-scoped queries are enforced.
+- Repository tests pass against PostgreSQL.
+- `go test ./...` passes.
+
+### Sprint 12: Config Reload and Observability
+
+Goal: make gateway configuration reloadable and observable.
+
+Scope:
+
+1. Add runtime config snapshot.
+2. Add config version tracking.
+3. Add gateway config reload.
+4. Keep last known good config.
+5. Add structured JSON logs.
+6. Add Prometheus metrics.
+7. Add trace hooks.
+
+Sprint done criteria:
+
+- Gateway reloads config without restart.
+- Invalid config does not replace last known good config.
+- Metrics endpoint exposes gateway metrics.
+- Logs include request ID, tenant ID, route ID, and protocol.
+- `go test ./...` passes.
+
+### Sprint 13: SOAP/XML Proof Adapter
+
+Goal: prove the gateway is not limited to REST and ISO8583.
+
+Scope:
+
+1. Add SOAP/XML adapter config.
+2. Add SOAP envelope generation.
+3. Add XML response extraction.
+4. Add REST to SOAP/XML transformation.
+5. Add mock SOAP upstream integration test.
+
+Sprint done criteria:
+
+- REST request can call SOAP/XML upstream.
+- SOAP/XML response maps back to REST JSON.
+- SOAP/XML route uses the same auth, policy, billing, and observability pipeline.
 - `go test ./...` passes.
 
 ## 21. Build Order Summary
@@ -607,4 +884,3 @@ The MVP is complete when:
 - Audit logs are written for admin changes.
 - Gateway config can reload without restart.
 - Core integration tests pass.
-
