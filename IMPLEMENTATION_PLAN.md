@@ -72,6 +72,8 @@ pkg/
 
 ## 4. Milestone 1: Project Foundation
 
+The milestone sections describe capability groups. For implementation work, use the sprint roadmap in section 20 as the source of truth.
+
 Goal: create a clean Go service foundation.
 
 Tasks:
@@ -82,6 +84,7 @@ Tasks:
 - Add structured logger.
 - Add graceful shutdown.
 - Add health endpoint.
+- Add readiness endpoint.
 - Add request ID middleware.
 - Add basic test setup.
 
@@ -120,6 +123,7 @@ type Route struct {
     APIProductID     string
     InboundProtocol  string
     OutboundProtocol string
+    Host             string
     Method           string
     Path             string
     UpstreamRef      string
@@ -134,6 +138,7 @@ Expected result:
 - Gateway can resolve a route for a tenant.
 - Unknown routes return `404`.
 - Disabled routes return `404` or `403` based on policy.
+- Early sprint route statuses may start with `draft`, `active`, and `disabled`; the full data model also includes `deprecated`.
 
 ## 6. Milestone 3: Authentication and Tenant Resolution
 
@@ -244,6 +249,7 @@ type CanonicalMessage struct {
     Operation      string
     Headers        map[string]string
     Fields         map[string]any
+    Metadata       map[string]any
     RawRef         string
     SensitiveKeys  []string
 }
@@ -277,14 +283,14 @@ sourceProtocol: rest
 targetProtocol: iso8583
 request:
   fields:
-    transactionType: "$.transactionType"
-    amount: "$.amount"
-    currency: "$.currency"
-    terminalId: "$.terminalId"
+    transactionType: "$.fields.transactionType"
+    amount: "$.fields.amount"
+    currency: "$.fields.currency"
+    terminalId: "$.fields.terminalId"
 response:
   fields:
-    responseCode: "$.responseCode"
-    authorizationCode: "$.authorizationCode"
+    responseCode: "$.fields.responseCode"
+    authorizationCode: "$.fields.authorizationCode"
 ```
 
 Expected result:
@@ -566,11 +572,12 @@ Scope:
 1. Initialize Go module.
 2. Create `cmd/gateway`.
 3. Add health endpoint.
-4. Add graceful shutdown.
-5. Add request ID middleware.
-6. Add basic config loading.
-7. Add structured logging.
-8. Add unit tests for health and request ID behavior.
+4. Add readiness endpoint.
+5. Add graceful shutdown.
+6. Add request ID middleware.
+7. Add basic config loading.
+8. Add structured logging.
+9. Add unit tests for health, readiness, and request ID behavior.
 
 Sprint done criteria:
 

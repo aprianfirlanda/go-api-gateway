@@ -159,6 +159,7 @@ type CanonicalMessage struct {
     Operation      string
     Headers        map[string]string
     Fields         map[string]any
+    Metadata       map[string]any
     RawRef         string
     SensitiveKeys  []string
 }
@@ -200,7 +201,6 @@ Recommended MVP:
 Required:
 
 - API key authentication.
-- OAuth2 client credentials with JWT validation.
 - Credential hashing at rest.
 - Credential rotation.
 - Credential status: active, suspended, revoked.
@@ -208,6 +208,7 @@ Required:
 
 Future:
 
+- OAuth2 client credentials with JWT validation.
 - mTLS per tenant or partner.
 - HMAC request signing.
 - Hardware security module integration for sensitive key operations.
@@ -255,9 +256,10 @@ Route example:
 ```yaml
 tenantId: tenant_bank_a
 apiProductId: card_authorization
+inboundProtocol: rest
+outboundProtocol: iso8583
 method: POST
 path: /cards/authorization
-upstreamType: iso8583
 upstreamRef: switch_primary
 transformationTemplateRef: card_authorization_rest_to_iso_v1
 timeoutMs: 5000
@@ -269,7 +271,7 @@ Generic route example:
 tenantId: tenant_bank_a
 apiProductId: account_inquiry
 inboundProtocol: rest
-outboundProtocol: soap
+outboundProtocol: soap_xml
 method: POST
 path: /accounts/inquiry
 upstreamRef: core_banking_soap
@@ -694,33 +696,33 @@ Configuration should be versioned:
 Required endpoints:
 
 ```text
-POST   /admin/tenants
-GET    /admin/tenants
-GET    /admin/tenants/{tenantId}
-PATCH  /admin/tenants/{tenantId}
+POST   /admin/v1/tenants
+GET    /admin/v1/tenants
+GET    /admin/v1/tenants/{tenantId}
+PATCH  /admin/v1/tenants/{tenantId}
 
-POST   /admin/tenants/{tenantId}/apis
-GET    /admin/tenants/{tenantId}/apis
-POST   /admin/tenants/{tenantId}/routes
-GET    /admin/tenants/{tenantId}/routes
-PATCH  /admin/tenants/{tenantId}/routes/{routeId}
+POST   /admin/v1/tenants/{tenantId}/api-products
+GET    /admin/v1/tenants/{tenantId}/api-products
+POST   /admin/v1/tenants/{tenantId}/routes
+GET    /admin/v1/tenants/{tenantId}/routes
+PATCH  /admin/v1/tenants/{tenantId}/routes/{routeId}
 
-POST   /admin/tenants/{tenantId}/credentials
-POST   /admin/tenants/{tenantId}/credentials/{credentialId}/rotate
-POST   /admin/tenants/{tenantId}/credentials/{credentialId}/revoke
+POST   /admin/v1/tenants/{tenantId}/consumers/{consumerId}/credentials
+POST   /admin/v1/tenants/{tenantId}/credentials/{credentialId}/rotate
+POST   /admin/v1/tenants/{tenantId}/credentials/{credentialId}/revoke
 
-POST   /admin/tenants/{tenantId}/transform-templates
-POST   /admin/tenants/{tenantId}/transform-templates/{templateId}/publish
-POST   /admin/tenants/{tenantId}/transform-templates/{templateId}/test
+POST   /admin/v1/tenants/{tenantId}/transformation-templates
+POST   /admin/v1/tenants/{tenantId}/transformation-templates/{templateId}/publish
+POST   /admin/v1/tenants/{tenantId}/transformation-templates/{templateId}/test
 
-POST   /admin/tenants/{tenantId}/protocol-adapters
-GET    /admin/tenants/{tenantId}/protocol-adapters
-PATCH  /admin/tenants/{tenantId}/protocol-adapters/{adapterId}
+POST   /admin/v1/tenants/{tenantId}/protocol-adapters
+GET    /admin/v1/tenants/{tenantId}/protocol-adapters
+PATCH  /admin/v1/tenants/{tenantId}/protocol-adapters/{adapterConfigId}
 
-POST   /admin/tenants/{tenantId}/iso8583-profiles
-GET    /admin/tenants/{tenantId}/usage
-GET    /admin/tenants/{tenantId}/billing-summaries
-GET    /admin/tenants/{tenantId}/audit-logs
+POST   /admin/v1/tenants/{tenantId}/iso8583-profiles
+GET    /admin/v1/tenants/{tenantId}/usage
+GET    /admin/v1/tenants/{tenantId}/billing-summaries/{billingPeriod}
+GET    /admin/v1/tenants/{tenantId}/audit-logs
 ```
 
 ## 5. Suggested Go Project Structure
@@ -865,7 +867,7 @@ tenant_users
 api_products
 routes
 upstreams
-protocol_adapters
+protocol_adapter_configs
 iso8583_profiles
 transformation_templates
 credentials
@@ -942,21 +944,21 @@ Recommended implementation order:
 4. Build API key authentication.
 5. Build in-memory route matching.
 6. Build REST upstream proxying.
-7. Add PostgreSQL storage for tenants, routes, and credentials.
-8. Add config cache and reload.
-9. Build ISO8583 encode/decode profile support.
-10. Build REST-to-ISO8583 transformation.
+7. Build protocol adapter interfaces and canonical message model.
+8. Add REST-to-REST transformation or pass-through using the canonical model.
+9. Build REST-to-ISO8583 transformation.
+10. Build ISO8583 encode/decode profile support.
 11. Build ISO8583-to-REST transformation.
-12. Build protocol adapter interfaces and canonical message model.
-13. Add REST-to-REST transformation or pass-through using the canonical model.
-14. Add rate limiting with Redis.
-15. Add usage event metering.
-16. Add billing worker and billing summaries.
-17. Add audit logs.
-18. Add admin API.
-19. Add observability and dashboards.
+12. Add shared policy execution and in-memory rate limiting.
+13. Add usage event metering.
+14. Add admin API.
+15. Add PostgreSQL storage for tenants, routes, credentials, templates, and upstreams.
+16. Add config cache and reload.
+17. Add observability and dashboards.
+18. Add billing worker and billing summaries.
+19. Add audit logs.
 20. Add integration tests with mock REST and ISO8583 upstreams.
-21. Add one non-REST, non-ISO8583 adapter as proof of extensibility, preferably SOAP/XML outbound.
+21. Add one non-REST, non-ISO8583 adapter as proof of extensibility, preferably REST to SOAP/XML outbound.
 
 ## 11. Testing Strategy
 

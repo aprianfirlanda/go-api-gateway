@@ -265,7 +265,7 @@ Reason:
 - Real database and Redis behavior in tests.
 - Avoids relying on developer machine services.
 
-Use integration tests from Sprint 11 onward.
+Use container-backed PostgreSQL and Redis integration tests from Sprint 11 onward. Earlier sprints may still use local `httptest`, mock upstream, or in-process integration tests when they do not require PostgreSQL or Redis containers.
 
 ## 17. Observability
 
@@ -421,4 +421,3 @@ SOAP/XML: encoding/xml
 JSON: encoding/json
 Expression engine: restricted internal evaluator
 ```
-

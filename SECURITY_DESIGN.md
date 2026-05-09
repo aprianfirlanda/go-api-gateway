@@ -89,10 +89,10 @@ Public requests must not trust `X-Tenant-ID` unless the authenticated credential
 MVP authentication methods:
 
 - API key.
-- OAuth2 client credentials with JWT validation.
 
 Post-MVP authentication methods:
 
+- OAuth2 client credentials with JWT validation.
 - mTLS.
 - HMAC request signing.
 - Partner certificate authentication.
@@ -644,7 +644,6 @@ Open security decisions:
 - Which secret manager to use in production.
 - Whether to enable PostgreSQL Row-Level Security from MVP.
 - Whether mTLS is required in the first customer deployment.
-- Whether request signing is MVP or post-MVP.
+- Whether request signing should be pulled into MVP for the first customer deployment.
 - Whether HSM integration is required for payment network certification.
 - How long to retain detailed request traces per tenant.
-

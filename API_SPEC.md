@@ -549,19 +549,19 @@ Request:
   "templateBody": {
     "request": {
       "fields": {
-        "2": "$.pan",
-        "3": "000000",
-        "4": "formatAmount($.amount)",
-        "41": "$.terminalId",
-        "49": "currencyNumeric($.currency)"
+        "2": "$.fields.pan",
+        "3": "'000000'",
+        "4": "formatAmount($.fields.amount)",
+        "41": "$.fields.terminalId",
+        "49": "currencyNumeric($.fields.currency)"
       }
     },
     "response": {
       "fields": {
-        "responseCode": "$.39",
-        "authorizationCode": "$.38",
-        "stan": "$.11",
-        "rrn": "$.37"
+        "responseCode": "$.fields.39",
+        "authorizationCode": "$.fields.38",
+        "stan": "$.fields.11",
+        "rrn": "$.fields.37"
       }
     }
   }
@@ -595,11 +595,13 @@ Request:
 {
   "direction": "request",
   "input": {
-    "transactionType": "purchase",
-    "pan": "4111111111111111",
-    "amount": 10000,
-    "currency": "IDR",
-    "terminalId": "ATM00101"
+    "fields": {
+      "transactionType": "purchase",
+      "pan": "4111111111111111",
+      "amount": 10000,
+      "currency": "IDR",
+      "terminalId": "ATM00101"
+    }
   }
 }
 ```
@@ -764,7 +766,13 @@ Request:
 }
 ```
 
-### 15.2 Get Tenant Usage
+### 15.2 List Billing Plans
+
+```http
+GET /admin/v1/billing-plans
+```
+
+### 15.3 Get Tenant Usage
 
 ```http
 GET /admin/v1/tenants/{tenantId}/usage?from=2026-05-01T00:00:00Z&to=2026-06-01T00:00:00Z
@@ -781,7 +789,7 @@ targetProtocol
 billable
 ```
 
-### 15.3 Get Billing Summary
+### 15.4 Get Billing Summary
 
 ```http
 GET /admin/v1/tenants/{tenantId}/billing-summaries/{billingPeriod}
@@ -793,13 +801,19 @@ Example:
 GET /admin/v1/tenants/{tenantId}/billing-summaries/2026-05
 ```
 
-### 15.4 Recalculate Billing Summary
+### 15.5 Recalculate Billing Summary
 
 ```http
 POST /admin/v1/tenants/{tenantId}/billing-summaries/{billingPeriod}/recalculate
 ```
 
-### 15.5 Export Billing Summary
+### 15.6 Finalize Billing Summary
+
+```http
+POST /admin/v1/tenants/{tenantId}/billing-summaries/{billingPeriod}/finalize
+```
+
+### 15.7 Export Billing Summary
 
 ```http
 GET /admin/v1/tenants/{tenantId}/billing-summaries/{billingPeriod}/export?format=csv
@@ -989,4 +1003,3 @@ Open API decisions:
 - Whether runtime config snapshots should be pulled by data plane or pushed through a queue.
 - Whether credential creation should support approval workflow.
 - Whether billing export should support invoice line-item grouping by protocol.
-

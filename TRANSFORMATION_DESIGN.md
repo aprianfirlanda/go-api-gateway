@@ -79,6 +79,7 @@ type CanonicalMessage struct {
     Headers        map[string]string
     Fields         map[string]any
     Metadata       map[string]any
+    RawRef         string
     SensitiveKeys  []string
 }
 ```
@@ -95,6 +96,7 @@ Field usage:
 - `Headers`: normalized transport or protocol metadata.
 - `Fields`: business payload fields.
 - `Metadata`: non-business protocol metadata.
+- `RawRef`: optional reference to a raw payload stored outside logs and billing records.
 - `SensitiveKeys`: field names that must be masked in logs and errors.
 
 Example:
@@ -753,4 +755,3 @@ Open decisions:
 - Whether transformation functions should be globally available or tenant-enabled.
 - Whether canonical schemas should be explicitly versioned per API product.
 - Whether dry-run tests should be stored as reusable test cases.
-

@@ -517,15 +517,18 @@ Traces:
 Security controls:
 
 - API key hashing.
-- OAuth2/JWT validation.
 - Tenant-scoped authorization.
 - RBAC for admin APIs.
 - TLS for public APIs.
-- mTLS for selected partners.
-- HMAC request signing for selected partners.
 - Secret manager integration.
 - Sensitive data masking.
 - Audit logging.
+
+Planned security controls:
+
+- OAuth2/JWT validation.
+- mTLS for selected partners.
+- HMAC request signing for selected partners.
 
 Cross-tenant protection must be tested at:
 
@@ -646,4 +649,3 @@ Open architecture decisions:
 - Whether dedicated tenants get separate gateway deployments.
 - Whether transformation templates are stored only as JSONB or also as YAML.
 - Whether ISO8583 connection pools are shared per tenant or per route.
-

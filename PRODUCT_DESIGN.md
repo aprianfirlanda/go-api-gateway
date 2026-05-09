@@ -117,9 +117,13 @@ Initial adapters:
 - REST inbound and outbound.
 - ISO8583 inbound and outbound.
 
+MVP extensibility proof:
+
+- REST to SOAP/XML outbound as a controlled proof adapter.
+
 Planned adapter categories:
 
-- SOAP/XML inbound and outbound.
+- Full SOAP/XML inbound and outbound.
 - gRPC inbound and outbound.
 - GraphQL inbound.
 - Webhook inbound and outbound.
@@ -294,13 +298,17 @@ response:
 MVP capabilities:
 
 - API key authentication.
-- OAuth2 client credentials support.
 - Tenant-level credential isolation.
-- Request signing support for finance partners.
 - IP allowlist per tenant or API.
 - TLS for all external HTTP APIs.
 - Secure storage for credentials and secrets.
 - Sensitive data masking in logs.
+
+Planned security capabilities:
+
+- OAuth2 client credentials support.
+- HMAC request signing support for finance partners.
+- mTLS for high-risk partners.
 
 Sensitive data rules:
 
@@ -409,7 +417,7 @@ Audit log examples:
 - User changed a billing plan.
 - User updated a tenant quota.
 
-### 6.11 Admin Portal
+### 6.11 Control Plane Admin Workflows
 
 MVP capabilities:
 
@@ -424,7 +432,9 @@ MVP capabilities:
 - Billing report page.
 - Audit log page.
 
-### 6.12 Developer Portal
+MVP delivery can be API-only. A browser-based admin portal can be added after the control plane APIs are stable.
+
+### 6.12 Developer-Facing Workflows
 
 MVP capabilities:
 
@@ -564,9 +574,9 @@ Responsibilities:
 - Generate invoice-ready records.
 - Export billing data.
 
-### Admin Portal
+### Admin UI
 
-Used by internal platform operators and tenant admins.
+Optional browser UI used by internal platform operators and tenant admins after the control plane APIs are stable.
 
 Responsibilities:
 
@@ -576,9 +586,9 @@ Responsibilities:
 - Billing reports.
 - Audit logs.
 
-### Developer Portal
+### Developer-Facing UI
 
-Used by API consumers.
+Optional browser UI used by API consumers after developer-facing API workflows are stable.
 
 Responsibilities:
 
@@ -602,8 +612,14 @@ Tenant
 
 User
 - id
-- tenantId
 - email
+- name
+- status
+
+TenantUser
+- id
+- tenantId
+- userId
 - role
 - status
 
@@ -618,13 +634,20 @@ Route
 - id
 - tenantId
 - apiProductId
+- name
 - inboundProtocol
 - outboundProtocol
+- host
 - method
 - path
-- upstreamType
-- upstreamConfig
+- listenerRef
+- upstreamId
 - transformationTemplateId
+- rateLimitPolicyId
+- quotaPolicyId
+- priority
+- timeoutMs
+- status
 
 ProtocolAdapterConfig
 - id
@@ -650,6 +673,8 @@ Credential
 - tenantId
 - consumerId
 - type
+- keyPrefix
+- secretHash
 - secretRef
 - status
 
@@ -785,10 +810,11 @@ Business success:
 
 ### Phase 4: Portal
 
-- Admin portal.
-- Developer portal.
+- Control plane APIs for admin workflows.
+- Developer-facing API documentation and credentials.
 - API documentation.
 - Tenant usage dashboard.
+- Browser-based admin and developer portals after API workflows are stable.
 
 ## 15. Recommended MVP Acceptance Criteria
 
@@ -815,7 +841,7 @@ Potential post-MVP features:
 - API marketplace.
 - Partner onboarding workflow.
 - Webhook support.
-- SOAP support.
+- Full SOAP support.
 - gRPC support.
 - GraphQL facade support.
 - Message queue adapters.
