@@ -4,7 +4,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"syra-backend/internal/auth"
 	"syra-backend/internal/config"
+	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/health"
 	"syra-backend/internal/httpserver"
 )
@@ -16,9 +18,11 @@ type App struct {
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	healthService := health.NewService(nil)
 	router := httpserver.NewRouter(httpserver.Dependencies{
-		Logger:        logger,
-		HealthService: healthService,
-		BodyLimit:     cfg.RequestBodyLimit,
+		Logger:          logger,
+		HealthService:   healthService,
+		CredentialStore: auth.NewInMemoryCredentialStore(),
+		RouteRegistry:   route.NewInMemoryRegistry(),
+		BodyLimit:       cfg.RequestBodyLimit,
 	})
 
 	return &App{

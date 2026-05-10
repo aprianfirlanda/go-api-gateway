@@ -38,3 +38,12 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
 }
+
+func writeError(w http.ResponseWriter, status int, code string, message string) {
+	writeJSON(w, status, map[string]map[string]string{
+		"error": {
+			"code":    code,
+			"message": message,
+		},
+	})
+}
