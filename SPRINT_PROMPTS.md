@@ -16,12 +16,22 @@ Follow PRODUCT_DESIGN.md, TECHNICAL_DESIGN.md, ARCHITECTURE.md, IMPLEMENTATION_P
 
 When a sprint is complete, review the result, then continue to the next sprint.
 
+Implementation location:
+
+```text
+Run all sprint implementation commands from syra-backend/.
+Do not create root-level Go implementation files unless explicitly requested.
+The repository root is for design and planning docs.
+```
+
 ## 3. Sprint 1 Prompt
 
 ```text
 Implement Sprint 1: Gateway Foundation from IMPLEMENTATION_PLAN.md.
 
 Follow all existing design docs, especially TECHNOLOGY_DECISIONS.md.
+
+Work inside syra-backend/.
 
 Build the smallest working Go gateway service:
 - initialize the Go module if needed
@@ -34,7 +44,7 @@ Build the smallest working Go gateway service:
 - add request ID middleware
 - add unit tests for health, readiness, and request ID behavior
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 2 yet.
 ```
 
@@ -44,6 +54,7 @@ Do not implement Sprint 2 yet.
 Implement Sprint 2: Tenant Routing and Authentication from IMPLEMENTATION_PLAN.md.
 
 Build on the existing code from Sprint 1.
+Work inside syra-backend/.
 
 Add:
 - tenant model
@@ -57,7 +68,7 @@ Add:
 - unauthorized and forbidden responses
 - tests for route matching, credential verification, and cross-tenant isolation
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 3 yet.
 ```
 
@@ -67,6 +78,7 @@ Do not implement Sprint 3 yet.
 Implement Sprint 3: REST Proxy from IMPLEMENTATION_PLAN.md.
 
 Build on the existing code from Sprint 2.
+Work inside syra-backend/.
 
 Add:
 - upstream model
@@ -83,7 +95,7 @@ Verify:
 - timeout behavior works
 - hop-by-hop headers are stripped
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 4 yet.
 ```
 
@@ -106,7 +118,7 @@ Add:
 
 Keep REST to REST proxy behavior working.
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 5 yet.
 ```
 
@@ -130,7 +142,7 @@ Add:
 
 Do not allow arbitrary scripting.
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 6 yet.
 ```
 
@@ -157,7 +169,7 @@ Verify:
 - mock ISO8583 upstream receives message
 - ISO8583 response maps back to REST JSON
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 7 yet.
 ```
 
@@ -178,7 +190,7 @@ Add:
 - integration test for ISO8583 inbound flow
 - malformed ISO8583 rejection test
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 8 yet.
 ```
 
@@ -199,7 +211,7 @@ Add:
 - policy error mapping
 - tests for policy order, blocked IP, oversized request, rate limit, and shared REST/ISO8583 pipeline behavior
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 9 yet.
 ```
 
@@ -222,7 +234,7 @@ Add:
 
 Ensure billing events do not include sensitive payload values.
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 10 yet.
 ```
 
@@ -247,7 +259,7 @@ Add:
 
 Follow API_SPEC.md and SECURITY_DESIGN.md.
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 11 yet.
 ```
 
@@ -273,7 +285,7 @@ Add:
 - tenant-scoped query helpers
 - integration tests for core repositories
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 12 yet.
 ```
 
@@ -294,7 +306,7 @@ Add:
 - OpenTelemetry trace hooks where practical
 - tests for config reload and invalid config rejection
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 Do not implement Sprint 13 yet.
 ```
 
@@ -317,7 +329,7 @@ Verify:
 - SOAP/XML response maps back to REST JSON
 - SOAP/XML route uses the same auth, policy, billing, and observability pipeline
 
-Run go test ./... and fix failures.
+Run go test ./... from inside syra-backend/ and fix failures.
 ```
 
 ## 16. Final MVP Verification Prompt
@@ -346,6 +358,5 @@ Continue the current sprint only. Finish the smallest coherent slice, add tests,
 Use this when tests fail after a sprint:
 
 ```text
-Fix the failing tests from the current sprint. Do not add new scope. Run go test ./... and summarize the fix.
+Fix the failing tests from the current sprint inside syra-backend/. Do not add new scope. Run go test ./... from inside syra-backend/ and summarize the fix.
 ```
-

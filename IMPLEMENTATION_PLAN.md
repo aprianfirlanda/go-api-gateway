@@ -10,7 +10,9 @@ The gateway should start with REST and ISO8583 support, but the implementation m
 
 Technology choices are locked in [TECHNOLOGY_DECISIONS.md](TECHNOLOGY_DECISIONS.md). Copy-paste implementation prompts are listed in [SPRINT_PROMPTS.md](SPRINT_PROMPTS.md).
 
-The cleaned Go service template lives in `syra-backend/`. Use it as the foundation when bootstrapping implementation, while keeping the target gateway package structure in this document as the long-term shape.
+The active Go implementation module lives in `syra-backend/`.
+
+All sprint implementation work must be performed inside `syra-backend/` unless explicitly requested otherwise. The repository root is reserved for design and planning documentation. Do not create a root-level `go.mod`, `cmd/`, `internal/`, or `pkg/` implementation tree.
 
 ## 2. Implementation Principles
 
@@ -27,7 +29,8 @@ The cleaned Go service template lives in `syra-backend/`. Use it as the foundati
 ## 3. Target Repository Structure
 
 ```text
-cmd/
+syra-backend/
+  cmd/
   gateway/
     main.go
   control-plane/
@@ -35,7 +38,7 @@ cmd/
   billing-worker/
     main.go
 
-internal/
+  internal/
   app/
     gateway/
     controlplane/
@@ -66,7 +69,7 @@ internal/
   audit/
   observability/
 
-pkg/
+  pkg/
   errors/
   ids/
   masking/
@@ -81,7 +84,8 @@ Goal: create a clean Go service foundation.
 Tasks:
 
 - Initialize Go module.
-- Add basic `cmd/gateway/main.go`.
+- Initialize or update the Go module inside `syra-backend/`.
+- Add basic `syra-backend/cmd/gateway/main.go`.
 - Add configuration loader.
 - Add structured logger.
 - Add graceful shutdown.
@@ -92,8 +96,8 @@ Tasks:
 
 Expected result:
 
-- `go test ./...` runs.
-- `go run ./cmd/gateway` starts an HTTP server.
+- `go test ./...` runs from inside `syra-backend/`.
+- `go run ./cmd/gateway` starts an HTTP server from inside `syra-backend/`.
 - `GET /healthz` returns healthy status.
 
 ## 5. Milestone 2: Tenant-Aware Routing
@@ -572,7 +576,7 @@ Goal: create the smallest working Go gateway service.
 Scope:
 
 1. Initialize Go module.
-2. Create `cmd/gateway`.
+2. Create `syra-backend/cmd/gateway`.
 3. Add health endpoint.
 4. Add readiness endpoint.
 5. Add graceful shutdown.

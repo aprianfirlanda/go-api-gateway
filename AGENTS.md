@@ -60,9 +60,12 @@ Use these locked choices unless the user explicitly changes them:
 
 ## Template Foundation
 
-- `syra-backend/` is the cleaned Go backend template foundation.
-- Keep it aligned with the locked technology choices above.
-- Do not reintroduce Fiber, GORM, Logrus, Viper, Cobra, RabbitMQ, or Swagger into the template unless explicitly requested.
+- `syra-backend/` is the active Go implementation module for this project.
+- All sprint implementation work must happen inside `syra-backend/` unless the user explicitly asks to create or modify code at the repository root.
+- The repository root is for product, architecture, planning, and design documentation.
+- Do not create root-level `go.mod`, `cmd/`, `internal/`, or `pkg/` implementation directories unless explicitly requested.
+- Keep `syra-backend/` aligned with the locked technology choices above.
+- Do not reintroduce Fiber, GORM, Logrus, Viper, Cobra, RabbitMQ, or Swagger into `syra-backend/` unless explicitly requested.
 
 ## Implementation Rules
 
@@ -79,7 +82,7 @@ Use these locked choices unless the user explicitly changes them:
 
 For code changes:
 
-- Run `go test ./...`.
+- Run `go test ./...` from inside `syra-backend/`.
 - Add or update focused tests for the sprint.
 - If tests cannot run, state the exact blocker.
 
@@ -93,17 +96,17 @@ For documentation-only changes:
 Start implementation:
 
 ```text
-Implement Sprint 1 from IMPLEMENTATION_PLAN.md. Add tests and run them.
+Implement Sprint 1 from IMPLEMENTATION_PLAN.md inside syra-backend/. Add tests and run them.
 ```
 
 Continue implementation:
 
 ```text
-Implement the next sprint from IMPLEMENTATION_PLAN.md. Add tests and run them.
+Implement the next sprint from IMPLEMENTATION_PLAN.md inside syra-backend/. Add tests and run them.
 ```
 
 Fix current sprint only:
 
 ```text
-Fix the failing tests from the current sprint. Do not add new scope. Run go test ./...
+Fix the failing tests from the current sprint inside syra-backend/. Do not add new scope. Run go test ./... from inside syra-backend/.
 ```
