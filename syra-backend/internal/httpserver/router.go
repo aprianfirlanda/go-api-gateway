@@ -9,7 +9,10 @@ import (
 
 	"syra-backend/internal/auth"
 	"syra-backend/internal/gateway/route"
+	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/ports/input"
+	"syra-backend/internal/protocol"
+	restprotocol "syra-backend/internal/protocol/rest"
 )
 
 type Dependencies struct {
@@ -17,6 +20,8 @@ type Dependencies struct {
 	HealthService   input.HealthService
 	CredentialStore auth.CredentialStore
 	RouteRegistry   route.Registry
+	UpstreamStore   upstream.Store
+	AdapterRegistry *protocol.Registry
 	BodyLimit       int64
 }
 
@@ -34,8 +39,15 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Get("/healthz", healthHandler.Liveness)
 	r.Get("/readyz", healthHandler.Readiness)
 
-	if deps.CredentialStore != nil && deps.RouteRegistry != nil {
-		gatewayHandler := NewGatewayHandler(deps.RouteRegistry)
+	if deps.CredentialStore != nil && deps.RouteRegistry != nil && deps.UpstreamStore != nil {
+		adapterRegistry := deps.AdapterRegistry
+		if adapterRegistry == nil {
+			adapterRegistry = protocol.NewRegistry()
+			restAdapter := restprotocol.NewAdapter(nil)
+			_ = adapterRegistry.RegisterProtocol(restAdapter)
+			_ = adapterRegistry.RegisterUpstream(restAdapter)
+		}
+		gatewayHandler := NewGatewayHandler(deps.RouteRegistry, deps.UpstreamStore, adapterRegistry)
 		r.Group(func(protected chi.Router) {
 			protected.Use(APIKeyAuth(deps.CredentialStore))
 			protected.Handle("/*", gatewayHandler)
