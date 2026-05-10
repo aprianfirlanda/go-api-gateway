@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/protocol"
@@ -21,15 +22,17 @@ type GatewayHandler struct {
 	adapters   *protocol.Registry
 	templates  transform.Store
 	transforms *transform.Engine
+	policies   *policy.Pipeline
 }
 
-func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine) *GatewayHandler {
+func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine, policies *policy.Pipeline) *GatewayHandler {
 	return &GatewayHandler{
 		routes:     routes,
 		upstreams:  upstreams,
 		adapters:   adapters,
 		templates:  templates,
 		transforms: transforms,
+		policies:   policies,
 	}
 }
 
@@ -55,6 +58,19 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceProtocol := protocolName(matchedRoute.InboundProtocol, restprotocol.Name)
+	if err := h.evaluatePolicy(r.Context(), policy.Request{
+		TenantID:   principal.TenantID,
+		ConsumerID: principal.ConsumerID,
+		RouteID:    matchedRoute.ID,
+		Protocol:   sourceProtocol,
+		RemoteAddr: r.RemoteAddr,
+		SizeBytes:  r.ContentLength,
+	}); err != nil {
+		writePolicyError(w, err)
+		return
+	}
+
 	target, err := h.upstreams.Find(r.Context(), principal.TenantID, matchedRoute.UpstreamRef)
 	if err != nil {
 		if errors.Is(err, upstream.ErrNotFound) {
@@ -65,7 +81,6 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceProtocol := protocolName(matchedRoute.InboundProtocol, restprotocol.Name)
 	targetProtocol := protocolName(matchedRoute.OutboundProtocol, string(target.Protocol))
 
 	protocolAdapter, ok := h.adapters.Protocol(sourceProtocol)
@@ -159,6 +174,13 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeOutboundResponse(w, outbound)
 }
 
+func (h *GatewayHandler) evaluatePolicy(ctx context.Context, req policy.Request) error {
+	if req.SizeBytes < 0 {
+		req.SizeBytes = 0
+	}
+	return h.policies.Evaluate(ctx, req)
+}
+
 func protocolName(value string, fallback string) string {
 	if value == "" {
 		return fallback
@@ -188,5 +210,20 @@ func writeOutboundResponse(w http.ResponseWriter, resp protocol.OutboundResponse
 
 	if resp.Body != nil {
 		_, _ = io.Copy(w, resp.Body)
+	}
+}
+
+func writePolicyError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, policy.ErrBlockedIP):
+		writeError(w, http.StatusForbidden, "blocked_ip", "IP address is not allowed")
+	case errors.Is(err, policy.ErrRequestTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "Request is too large")
+	case errors.Is(err, policy.ErrRateLimited):
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "Rate limit exceeded")
+	case errors.Is(err, policy.ErrQuotaExceeded):
+		writeError(w, http.StatusForbidden, "quota_exceeded", "Quota exceeded")
+	default:
+		writeError(w, http.StatusInternalServerError, "policy_error", "Policy evaluation failed")
 	}
 }

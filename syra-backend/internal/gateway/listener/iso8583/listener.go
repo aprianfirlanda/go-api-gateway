@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/protocol"
 	iso8583protocol "syra-backend/internal/protocol/iso8583"
@@ -38,6 +39,7 @@ type Server struct {
 	templates       transform.Store
 	transforms      *transform.Engine
 	rest            *restprotocol.Adapter
+	policies        *policy.Pipeline
 }
 
 func NewServer(
@@ -47,6 +49,7 @@ func NewServer(
 	templates transform.Store,
 	transforms *transform.Engine,
 	rest *restprotocol.Adapter,
+	policies *policy.Pipeline,
 ) *Server {
 	if codec == nil {
 		codec = iso8583protocol.NewInternalCodec()
@@ -64,6 +67,7 @@ func NewServer(
 		templates:       templates,
 		transforms:      transforms,
 		rest:            rest,
+		policies:        policies,
 	}
 }
 
@@ -95,14 +99,14 @@ func (s *Server) handleConn(parent context.Context, conn net.Conn) {
 		_ = conn.SetDeadline(deadline)
 	}
 
-	response, err := s.HandleMessage(ctx, conn)
+	response, err := s.HandleMessage(ctx, conn, conn.RemoteAddr().String())
 	if err != nil {
 		return
 	}
 	_, _ = conn.Write(response)
 }
 
-func (s *Server) HandleMessage(ctx context.Context, reader io.Reader) ([]byte, error) {
+func (s *Server) HandleMessage(ctx context.Context, reader io.Reader, remoteAddr ...string) ([]byte, error) {
 	profile, err := s.profiles.Find(ctx, s.listenerProfile.ISO8583ProfileID)
 	if err != nil {
 		return nil, err
@@ -110,6 +114,17 @@ func (s *Server) HandleMessage(ctx context.Context, reader io.Reader) ([]byte, e
 
 	raw, err := readISOMessage(reader, profile)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := s.policies.Evaluate(ctx, policy.Request{
+		TenantID:   s.listenerProfile.TenantID,
+		ConsumerID: s.listenerProfile.ConsumerID,
+		RouteID:    s.listenerProfile.RouteID,
+		Protocol:   iso8583protocol.Name,
+		RemoteAddr: firstString(remoteAddr),
+		SizeBytes:  int64(len(raw)),
+	}); err != nil {
 		return nil, err
 	}
 
@@ -193,4 +208,11 @@ func defaultString(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }

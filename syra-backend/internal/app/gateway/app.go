@@ -6,6 +6,7 @@ import (
 
 	"syra-backend/internal/auth"
 	"syra-backend/internal/config"
+	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/health"
@@ -44,6 +45,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		AdapterRegistry: adapterRegistry,
 		TemplateStore:   transform.NewInMemoryStore(),
 		TransformEngine: transform.NewEngine(),
+		PolicyPipeline:  policy.NewPipeline(),
 		BodyLimit:       cfg.RequestBodyLimit,
 	})
 

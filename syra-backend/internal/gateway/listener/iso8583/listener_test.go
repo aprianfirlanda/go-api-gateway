@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
@@ -55,7 +56,7 @@ func TestISO8583InboundFlow(t *testing.T) {
 		RESTMethod: http.MethodPost,
 		RESTPath:   "/authorizations",
 		Timeout:    time.Second,
-	}, codec, iso8583.NewInMemoryProfileStore(profile), transform.NewInMemoryStore(testTemplate()), transform.NewEngine(), restprotocol.NewAdapter(http.DefaultClient))
+	}, codec, iso8583.NewInMemoryProfileStore(profile), transform.NewInMemoryStore(testTemplate()), transform.NewEngine(), restprotocol.NewAdapter(http.DefaultClient), policy.NewPipeline())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -106,11 +107,34 @@ func TestISO8583InboundRejectsMalformedMessage(t *testing.T) {
 		TenantID:         "tenant_1",
 		ISO8583ProfileID: profile.ID,
 		TemplateID:       "template_1",
-	}, codec, iso8583.NewInMemoryProfileStore(profile), transform.NewInMemoryStore(testTemplate()), transform.NewEngine(), restprotocol.NewAdapter(http.DefaultClient))
+	}, codec, iso8583.NewInMemoryProfileStore(profile), transform.NewInMemoryStore(testTemplate()), transform.NewEngine(), restprotocol.NewAdapter(http.DefaultClient), policy.NewPipeline())
 
 	_, err := server.HandleMessage(context.Background(), strings.NewReader("\x00\x04bad"))
 
 	require.Error(t, err)
+}
+
+func TestISO8583InboundAppliesSharedPolicy(t *testing.T) {
+	codec := iso8583.NewInternalCodec()
+	profile := testProfile()
+	server := NewServer(Profile{
+		ID:               "listener_1",
+		TenantID:         "tenant_1",
+		ConsumerID:       "switch_1",
+		RouteID:          "iso_inbound_route",
+		ISO8583ProfileID: profile.ID,
+		TemplateID:       "template_1",
+	}, codec, iso8583.NewInMemoryProfileStore(profile), transform.NewInMemoryStore(testTemplate()), transform.NewEngine(), restprotocol.NewAdapter(http.DefaultClient), policy.NewPipeline(policy.NewRequestSizeLimitPolicy(5)))
+
+	request, err := codec.Pack(profile, map[string]any{
+		"mti": "0100",
+		"3":   "000000",
+	})
+	require.NoError(t, err)
+
+	_, err = server.HandleMessage(context.Background(), strings.NewReader(string(request)), "127.0.0.1:1234")
+
+	require.ErrorIs(t, err, policy.ErrRequestTooLarge)
 }
 
 func testTemplate() transform.Template {

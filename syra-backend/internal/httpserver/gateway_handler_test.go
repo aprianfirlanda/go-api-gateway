@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/health"
@@ -281,6 +282,7 @@ type gatewayTestConfig struct {
 	keyPrefix          string
 	upstreamBaseURL    string
 	timeoutMs          int
+	policies           *policy.Pipeline
 }
 
 func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
@@ -345,7 +347,75 @@ func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
 			BaseURL:  cfg.upstreamBaseURL,
 		}),
 		AdapterRegistry: newTestAdapterRegistry(t),
+		PolicyPipeline:  cfg.policies,
 	})
+}
+
+func TestGatewayRouteBlocksIPPolicy(t *testing.T) {
+	upstreamHits := atomic.Int64{}
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstreamServer.Close)
+	allowlist, err := policy.NewIPAllowlistPolicy("10.0.0.0/8")
+	require.NoError(t, err)
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		upstreamBaseURL: upstreamServer.URL,
+		policies:        policy.NewPipeline(allowlist),
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+	req.RemoteAddr = "192.168.1.10:1234"
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.JSONEq(t, `{"error":{"code":"blocked_ip","message":"IP address is not allowed"}}`, rec.Body.String())
+	require.Equal(t, int64(0), upstreamHits.Load())
+}
+
+func TestGatewayRouteRejectsOversizedRequestPolicy(t *testing.T) {
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		policies: policy.NewPipeline(policy.NewRequestSizeLimitPolicy(3)),
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", strings.NewReader("abcd"))
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	require.JSONEq(t, `{"error":{"code":"request_too_large","message":"Request is too large"}}`, rec.Body.String())
+}
+
+func TestGatewayRouteRateLimitPolicy(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstreamServer.Close)
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		upstreamBaseURL: upstreamServer.URL,
+		policies: policy.NewPipeline(policy.NewRateLimitPolicy(
+			policy.NewInMemoryRateLimiter(1, time.Minute),
+		)),
+	})
+
+	for idx := 0; idx < 2; idx++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+		req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+		router.ServeHTTP(rec, req)
+		if idx == 0 {
+			require.Equal(t, http.StatusOK, rec.Code)
+			continue
+		}
+		require.Equal(t, http.StatusTooManyRequests, rec.Code)
+		require.JSONEq(t, `{"error":{"code":"rate_limited","message":"Rate limit exceeded"}}`, rec.Body.String())
+	}
 }
 
 func TestGatewayRouteReturnsBadGatewayWhenUpstreamMissing(t *testing.T) {
