@@ -11,7 +11,7 @@ These choices are intended to keep the MVP simple, production-oriented, and comp
 Decision:
 
 ```text
-Go stable release
+Go 1.25.9
 ```
 
 Reason:
@@ -19,6 +19,7 @@ Reason:
 - Strong standard library for HTTP, TCP, TLS, and concurrency.
 - Simple static binary deployment.
 - Good fit for gateway and worker services.
+- Explicit version pinning keeps local builds, CI, and Docker images consistent.
 
 ## 3. HTTP Server
 

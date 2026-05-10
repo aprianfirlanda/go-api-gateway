@@ -1,0 +1,6 @@
+# IDE
+.idea
+.gocache
+
+# Config / Env File
+.env

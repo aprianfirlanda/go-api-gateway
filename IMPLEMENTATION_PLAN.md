@@ -10,6 +10,8 @@ The gateway should start with REST and ISO8583 support, but the implementation m
 
 Technology choices are locked in [TECHNOLOGY_DECISIONS.md](TECHNOLOGY_DECISIONS.md). Copy-paste implementation prompts are listed in [SPRINT_PROMPTS.md](SPRINT_PROMPTS.md).
 
+The cleaned Go service template lives in `syra-backend/`. Use it as the foundation when bootstrapping implementation, while keeping the target gateway package structure in this document as the long-term shape.
+
 ## 2. Implementation Principles
 
 - Build the gateway runtime in Go.

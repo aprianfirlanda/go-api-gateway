@@ -37,6 +37,7 @@ For sprint implementation, always start with `IMPLEMENTATION_PLAN.md`, `SPRINT_P
 
 Use these locked choices unless the user explicitly changes them:
 
+- Go version: `1.25.9`
 - HTTP server: `net/http`
 - Router: `github.com/go-chi/chi/v5`
 - Logger: `log/slog`
@@ -56,6 +57,12 @@ Use these locked choices unless the user explicitly changes them:
 - SOAP/XML: `encoding/xml`
 - JSON: `encoding/json`
 - Transformation expressions: restricted internal evaluator
+
+## Template Foundation
+
+- `syra-backend/` is the cleaned Go backend template foundation.
+- Keep it aligned with the locked technology choices above.
+- Do not reintroduce Fiber, GORM, Logrus, Viper, Cobra, RabbitMQ, or Swagger into the template unless explicitly requested.
 
 ## Implementation Rules
 
@@ -100,4 +107,3 @@ Fix current sprint only:
 ```text
 Fix the failing tests from the current sprint. Do not add new scope. Run go test ./...
 ```
-
