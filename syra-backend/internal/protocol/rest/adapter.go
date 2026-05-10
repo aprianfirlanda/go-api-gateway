@@ -1,8 +1,11 @@
 package rest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -35,6 +38,22 @@ func (a *Adapter) Decode(ctx context.Context, req protocol.InboundRequest) (prot
 		return protocol.CanonicalMessage{}, fmt.Errorf("http request is required")
 	}
 
+	fields := map[string]any{}
+	body := req.HTTPRequest.Body
+	if body != nil {
+		bodyBytes, err := io.ReadAll(body)
+		if err != nil {
+			return protocol.CanonicalMessage{}, fmt.Errorf("read request body: %w", err)
+		}
+		_ = body.Close()
+		if len(bodyBytes) > 0 {
+			if err := json.Unmarshal(bodyBytes, &fields); err != nil {
+				fields = map[string]any{}
+			}
+		}
+		body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
 	return protocol.CanonicalMessage{
 		TenantID:       req.TenantID,
 		ConsumerID:     req.ConsumerID,
@@ -48,9 +67,9 @@ func (a *Adapter) Decode(ctx context.Context, req protocol.InboundRequest) (prot
 		Path:           req.HTTPRequest.URL.Path,
 		RawQuery:       req.HTTPRequest.URL.RawQuery,
 		Headers:        req.HTTPRequest.Header.Clone(),
-		Fields:         map[string]any{},
+		Fields:         fields,
 		Metadata:       map[string]any{},
-		Body:           req.HTTPRequest.Body,
+		Body:           body,
 	}, nil
 }
 
@@ -67,10 +86,26 @@ func (a *Adapter) Encode(ctx context.Context, msg protocol.CanonicalMessage) (pr
 		msg.Headers = http.Header{}
 	}
 
+	body := msg.Body
+	headers := msg.Headers
+	if headers == nil {
+		headers = http.Header{}
+	}
+	if body == nil && msg.Fields != nil {
+		bodyBytes, err := json.Marshal(msg.Fields)
+		if err != nil {
+			return protocol.OutboundResponse{}, fmt.Errorf("encode response json: %w", err)
+		}
+		body = io.NopCloser(bytes.NewReader(bodyBytes))
+		if headers.Get("Content-Type") == "" {
+			headers.Set("Content-Type", "application/json")
+		}
+	}
+
 	return protocol.OutboundResponse{
 		StatusCode: status,
-		Headers:    msg.Headers,
-		Body:       msg.Body,
+		Headers:    headers,
+		Body:       body,
 	}, nil
 }
 

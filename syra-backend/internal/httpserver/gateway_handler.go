@@ -12,19 +12,24 @@ import (
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/protocol"
 	restprotocol "syra-backend/internal/protocol/rest"
+	"syra-backend/internal/transform"
 )
 
 type GatewayHandler struct {
-	routes    route.Registry
-	upstreams upstream.Store
-	adapters  *protocol.Registry
+	routes     route.Registry
+	upstreams  upstream.Store
+	adapters   *protocol.Registry
+	templates  transform.Store
+	transforms *transform.Engine
 }
 
-func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry) *GatewayHandler {
+func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine) *GatewayHandler {
 	return &GatewayHandler{
-		routes:    routes,
-		upstreams: upstreams,
-		adapters:  adapters,
+		routes:     routes,
+		upstreams:  upstreams,
+		adapters:   adapters,
+		templates:  templates,
+		transforms: transforms,
 	}
 }
 
@@ -97,11 +102,36 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var template transform.Template
+	if matchedRoute.TemplateRef != "" {
+		if h.templates == nil {
+			writeError(w, http.StatusBadGateway, "template_not_found", "Transformation template not found")
+			return
+		}
+		template, err = h.templates.Find(ctx, principal.TenantID, matchedRoute.TemplateRef)
+		if err != nil {
+			if errors.Is(err, transform.ErrTemplateNotFound) {
+				writeError(w, http.StatusBadGateway, "template_not_found", "Transformation template not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error")
+			return
+		}
+		msg, err = h.transforms.DryRun(ctx, template, transform.DirectionRequest, msg)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "transformation_error", "Request transformation failed")
+			return
+		}
+	}
+
 	upstreamMsg, err := upstreamAdapter.Call(ctx, protocol.UpstreamTarget{
 		ID:       target.ID,
 		TenantID: target.TenantID,
 		Protocol: string(target.Protocol),
 		BaseURL:  target.BaseURL,
+		Metadata: map[string]string{
+			"iso8583ProfileId": target.ISO8583ProfileID,
+		},
 	}, msg)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -110,6 +140,14 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 		return
+	}
+
+	if matchedRoute.TemplateRef != "" {
+		upstreamMsg, err = h.transforms.DryRun(ctx, template, transform.DirectionResponse, upstreamMsg)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "transformation_error", "Response transformation failed")
+			return
+		}
 	}
 
 	outbound, err := protocolAdapter.Encode(ctx, upstreamMsg)

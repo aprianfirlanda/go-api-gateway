@@ -1,9 +1,12 @@
 package httpserver
 
 import (
+	"encoding/binary"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,7 +18,9 @@ import (
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/health"
 	"syra-backend/internal/protocol"
+	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
+	"syra-backend/internal/transform"
 )
 
 func TestGatewayRouteRequiresAPIKey(t *testing.T) {
@@ -164,6 +169,110 @@ func TestGatewayRouteTimeout(t *testing.T) {
 	require.JSONEq(t, `{"error":{"code":"upstream_timeout","message":"Upstream request timed out"}}`, rec.Body.String())
 }
 
+func TestGatewayRouteTransformsRESTToISO8583AndBackToREST(t *testing.T) {
+	profile := gatewayISOProfile()
+	codec := iso8583.NewInternalCodec()
+	requestCh := make(chan []byte, 1)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		buffer := make([]byte, 2048)
+		n, err := conn.Read(buffer)
+		if err != nil {
+			return
+		}
+		requestCh <- append([]byte(nil), buffer[:n]...)
+
+		response, _ := codec.Pack(profile, map[string]any{
+			"mti": "0110",
+			"11":  "123456",
+			"38":  "A12345",
+			"39":  "00",
+		})
+		_, _ = conn.Write(response)
+	}()
+
+	router := NewRouter(Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
+		HealthService: health.NewService(nil),
+		CredentialStore: auth.NewInMemoryCredentialStore(mustCredential(t, auth.APIKeyCredential{
+			ID:         "credential_1",
+			TenantID:   "tenant_1",
+			ConsumerID: "consumer_1",
+			KeyPrefix:  "gw_live_tenant_1",
+			Status:     auth.StatusActive,
+		})),
+		RouteRegistry: route.NewInMemoryRegistry(route.Route{
+			ID:               "route_iso",
+			TenantID:         "tenant_1",
+			APIProductID:     "product_1",
+			InboundProtocol:  restprotocol.Name,
+			OutboundProtocol: iso8583.Name,
+			UpstreamRef:      "switch_1",
+			TemplateRef:      "template_1",
+			Host:             "api.example.test",
+			Method:           http.MethodPost,
+			Path:             "/cards/authorization",
+			TimeoutMs:        500,
+			Status:           route.StatusActive,
+		}),
+		UpstreamStore: upstream.NewInMemoryStore(upstream.Upstream{
+			ID:               "switch_1",
+			TenantID:         "tenant_1",
+			Protocol:         upstream.ProtocolISO8583,
+			BaseURL:          listener.Addr().String(),
+			ISO8583ProfileID: profile.ID,
+		}),
+		AdapterRegistry: newTestAdapterRegistryWithISO(t, iso8583.NewInMemoryProfileStore(profile)),
+		TemplateStore:   transform.NewInMemoryStore(gatewayISOTransformTemplate()),
+		TransformEngine: transform.NewEngine(
+			transform.WithClock(func() time.Time {
+				return time.Date(2026, 5, 10, 12, 30, 15, 0, time.UTC)
+			}),
+			transform.WithSTANGenerator(func() string {
+				return "123456"
+			}),
+		),
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://api.example.test/cards/authorization", strings.NewReader(`{
+		"pan":"4111111111111111",
+		"amount":10000,
+		"currency":"IDR",
+		"terminalId":"ATM00101"
+	}`))
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"authorizationCode":"A12345","responseCode":"00","stan":"123456"}`, rec.Body.String())
+
+	request := <-requestCh
+	require.Equal(t, len(request)-2, int(binary.BigEndian.Uint16(request[:2])))
+	fields, err := codec.Unpack(profile, request)
+	require.NoError(t, err)
+	require.Equal(t, "0100", fields["mti"])
+	require.Equal(t, "4111111111111111", fields["2"])
+	require.Equal(t, "000000", fields["3"])
+	require.Equal(t, "000000010000", fields["4"])
+	require.Equal(t, "0510123015", fields["7"])
+	require.Equal(t, "123456", fields["11"])
+	require.Equal(t, "ATM00101", fields["41"])
+	require.Equal(t, "360", fields["49"])
+}
+
 type gatewayTestConfig struct {
 	credentialStatus   string
 	credentialTenantID string
@@ -299,4 +408,66 @@ func newTestAdapterRegistry(t *testing.T) *protocol.Registry {
 	require.NoError(t, registry.RegisterProtocol(adapter))
 	require.NoError(t, registry.RegisterUpstream(adapter))
 	return registry
+}
+
+func newTestAdapterRegistryWithISO(t *testing.T, profiles iso8583.ProfileStore) *protocol.Registry {
+	t.Helper()
+
+	registry := newTestAdapterRegistry(t)
+	isoAdapter := iso8583.NewAdapter(nil, profiles, nil)
+	require.NoError(t, registry.RegisterUpstream(isoAdapter))
+	return registry
+}
+
+func gatewayISOTransformTemplate() transform.Template {
+	return transform.Template{
+		ID:             "template_1",
+		TenantID:       "tenant_1",
+		APIProductID:   "product_1",
+		Name:           "rest-to-iso8583-card-auth",
+		SourceProtocol: restprotocol.Name,
+		TargetProtocol: iso8583.Name,
+		Version:        1,
+		Status:         transform.StatusPublished,
+		Request: transform.Section{
+			Fields: map[string]string{
+				"2":  "$.fields.pan",
+				"3":  "'000000'",
+				"4":  "formatAmount($.fields.amount)",
+				"7":  "nowMMddHHmmss()",
+				"11": "generateStan()",
+				"41": "$.fields.terminalId",
+				"49": "currencyNumeric($.fields.currency)",
+			},
+			Sensitive: []string{"2"},
+		},
+		Response: transform.Section{
+			Fields: map[string]string{
+				"responseCode":      "$.fields.39",
+				"authorizationCode": "$.fields.38",
+				"stan":              "$.fields.11",
+			},
+		},
+	}
+}
+
+func gatewayISOProfile() iso8583.Profile {
+	return iso8583.Profile{
+		ID:           "profile_1",
+		MTI:          "0100",
+		ResponseMTI:  "0110",
+		LengthHeader: true,
+		Fields: map[int]iso8583.FieldSpec{
+			2:  {ID: 2, Type: iso8583.FieldLLVAR, Length: 19, Sensitive: true},
+			3:  {ID: 3, Type: iso8583.FieldFixed, Length: 6},
+			4:  {ID: 4, Type: iso8583.FieldFixed, Length: 12},
+			7:  {ID: 7, Type: iso8583.FieldFixed, Length: 10},
+			11: {ID: 11, Type: iso8583.FieldFixed, Length: 6},
+			38: {ID: 38, Type: iso8583.FieldFixed, Length: 6},
+			39: {ID: 39, Type: iso8583.FieldFixed, Length: 2},
+			41: {ID: 41, Type: iso8583.FieldFixed, Length: 8},
+			49: {ID: 49, Type: iso8583.FieldFixed, Length: 3},
+		},
+		SensitiveKeys: []string{"2"},
+	}
 }

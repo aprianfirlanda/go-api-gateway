@@ -48,4 +48,5 @@ type UpstreamTarget struct {
 	TenantID string
 	Protocol string
 	BaseURL  string
+	Metadata map[string]string
 }

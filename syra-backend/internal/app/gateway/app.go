@@ -11,7 +11,9 @@ import (
 	"syra-backend/internal/health"
 	"syra-backend/internal/httpserver"
 	"syra-backend/internal/protocol"
+	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
+	"syra-backend/internal/transform"
 )
 
 type App struct {
@@ -28,6 +30,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	if err := adapterRegistry.RegisterUpstream(restAdapter); err != nil {
 		return nil, err
 	}
+	isoAdapter := iso8583.NewAdapter(nil, iso8583.NewInMemoryProfileStore(), nil)
+	if err := adapterRegistry.RegisterUpstream(isoAdapter); err != nil {
+		return nil, err
+	}
 
 	router := httpserver.NewRouter(httpserver.Dependencies{
 		Logger:          logger,
@@ -36,6 +42,8 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		RouteRegistry:   route.NewInMemoryRegistry(),
 		UpstreamStore:   upstream.NewInMemoryStore(),
 		AdapterRegistry: adapterRegistry,
+		TemplateStore:   transform.NewInMemoryStore(),
+		TransformEngine: transform.NewEngine(),
 		BodyLimit:       cfg.RequestBodyLimit,
 	})
 

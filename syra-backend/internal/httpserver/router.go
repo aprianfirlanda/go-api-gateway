@@ -13,6 +13,7 @@ import (
 	"syra-backend/internal/ports/input"
 	"syra-backend/internal/protocol"
 	restprotocol "syra-backend/internal/protocol/rest"
+	"syra-backend/internal/transform"
 )
 
 type Dependencies struct {
@@ -22,6 +23,8 @@ type Dependencies struct {
 	RouteRegistry   route.Registry
 	UpstreamStore   upstream.Store
 	AdapterRegistry *protocol.Registry
+	TemplateStore   transform.Store
+	TransformEngine *transform.Engine
 	BodyLimit       int64
 }
 
@@ -47,7 +50,11 @@ func NewRouter(deps Dependencies) http.Handler {
 			_ = adapterRegistry.RegisterProtocol(restAdapter)
 			_ = adapterRegistry.RegisterUpstream(restAdapter)
 		}
-		gatewayHandler := NewGatewayHandler(deps.RouteRegistry, deps.UpstreamStore, adapterRegistry)
+		transformEngine := deps.TransformEngine
+		if transformEngine == nil {
+			transformEngine = transform.NewEngine()
+		}
+		gatewayHandler := NewGatewayHandler(deps.RouteRegistry, deps.UpstreamStore, adapterRegistry, deps.TemplateStore, transformEngine)
 		r.Group(func(protected chi.Router) {
 			protected.Use(APIKeyAuth(deps.CredentialStore))
 			protected.Handle("/*", gatewayHandler)
