@@ -119,7 +119,22 @@ func (a *Adapter) Call(ctx context.Context, target protocol.UpstreamTarget, msg 
 		return protocol.CanonicalMessage{}, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, msg.Method, targetURL, msg.Body)
+	body := msg.Body
+	if body == nil && msg.Fields != nil {
+		bodyBytes, err := json.Marshal(msg.Fields)
+		if err != nil {
+			return protocol.CanonicalMessage{}, fmt.Errorf("encode upstream request json: %w", err)
+		}
+		body = io.NopCloser(bytes.NewReader(bodyBytes))
+		if msg.Headers == nil {
+			msg.Headers = http.Header{}
+		}
+		if msg.Headers.Get("Content-Type") == "" {
+			msg.Headers.Set("Content-Type", "application/json")
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, msg.Method, targetURL, body)
 	if err != nil {
 		return protocol.CanonicalMessage{}, fmt.Errorf("build upstream request: %w", err)
 	}
@@ -129,6 +144,19 @@ func (a *Adapter) Call(ctx context.Context, target protocol.UpstreamTarget, msg 
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return protocol.CanonicalMessage{}, err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return protocol.CanonicalMessage{}, fmt.Errorf("read upstream response: %w", err)
+	}
+
+	fields := map[string]any{}
+	if len(bodyBytes) > 0 {
+		if err := json.Unmarshal(bodyBytes, &fields); err != nil {
+			fields = map[string]any{}
+		}
 	}
 
 	return protocol.CanonicalMessage{
@@ -144,9 +172,9 @@ func (a *Adapter) Call(ctx context.Context, target protocol.UpstreamTarget, msg 
 		Path:           msg.Path,
 		RawQuery:       msg.RawQuery,
 		Headers:        resp.Header.Clone(),
-		Fields:         map[string]any{},
+		Fields:         fields,
 		Metadata:       map[string]any{},
-		Body:           resp.Body,
+		Body:           io.NopCloser(bytes.NewReader(bodyBytes)),
 		StatusCode:     resp.StatusCode,
 		SensitiveKeys:  msg.SensitiveKeys,
 	}, nil
