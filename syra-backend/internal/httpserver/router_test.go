@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestHealthzReturnsHealthy(t *testing.T) {
@@ -20,15 +22,24 @@ func TestHealthzReturnsHealthy(t *testing.T) {
 
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if got := rec.Body.String(); got != "{\"status\":\"healthy\"}\n" {
-		t.Fatalf("body = %q, want healthy json", got)
-	}
-	if rec.Header().Get("X-Request-Id") == "" {
-		t.Fatal("expected request id header")
-	}
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"status":"healthy"}`, rec.Body.String())
+	require.NotEmpty(t, rec.Header().Get("X-Request-Id"))
+}
+
+func TestReadyzReturnsReady(t *testing.T) {
+	router := NewRouter(Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
+		HealthService: stubHealthService{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"status":"ready"}`, rec.Body.String())
 }
 
 func TestReadyzReturnsUnavailableWhenDependencyFails(t *testing.T) {
@@ -42,12 +53,23 @@ func TestReadyzReturnsUnavailableWhenDependencyFails(t *testing.T) {
 
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusServiceUnavailable)
-	}
-	if got := rec.Body.String(); got != "{\"status\":\"not_ready\"}\n" {
-		t.Fatalf("body = %q, want not_ready json", got)
-	}
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.JSONEq(t, `{"status":"not_ready"}`, rec.Body.String())
+}
+
+func TestRequestIDMiddlewarePreservesInboundRequestID(t *testing.T) {
+	router := NewRouter(Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
+		HealthService: stubHealthService{},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("X-Request-Id", "external-request-id")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, "external-request-id", rec.Header().Get("X-Request-Id"))
 }
 
 type stubHealthService struct {
