@@ -6,9 +6,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"syra-backend/internal/observability"
 )
 
 func TestHealthzReturnsHealthy(t *testing.T) {
@@ -70,6 +73,25 @@ func TestRequestIDMiddlewarePreservesInboundRequestID(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, "external-request-id", rec.Header().Get("X-Request-Id"))
+}
+
+func TestMetricsEndpointExposesPrometheusMetrics(t *testing.T) {
+	router := NewRouter(Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
+		HealthService: stubHealthService{},
+		Metrics:       observability.NewMetrics(),
+	})
+
+	healthRec := httptest.NewRecorder()
+	router.ServeHTTP(healthRec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	require.Equal(t, http.StatusOK, healthRec.Code)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.True(t, strings.Contains(rec.Body.String(), "syra_gateway_requests_total"))
 }
 
 type stubHealthService struct {

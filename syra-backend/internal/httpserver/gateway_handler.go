@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,7 +14,9 @@ import (
 	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
+	"syra-backend/internal/observability"
 	"syra-backend/internal/protocol"
+	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
 	"syra-backend/internal/transform"
 	"syra-backend/pkg/ids"
@@ -27,9 +30,14 @@ type GatewayHandler struct {
 	transforms  *transform.Engine
 	policies    *policy.Pipeline
 	usageEvents billing.UsageEventStore
+	metrics     *observability.Metrics
+	logger      *slog.Logger
 }
 
-func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine, policies *policy.Pipeline, usageEvents billing.UsageEventStore) *GatewayHandler {
+func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine, policies *policy.Pipeline, usageEvents billing.UsageEventStore, metrics *observability.Metrics, logger *slog.Logger) *GatewayHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &GatewayHandler{
 		routes:      routes,
 		upstreams:   upstreams,
@@ -38,6 +46,8 @@ func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters
 		transforms:  transforms,
 		policies:    policies,
 		usageEvents: usageEvents,
+		metrics:     metrics,
+		logger:      logger,
 	}
 }
 
@@ -97,6 +107,12 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		usageEvent.Status = billing.StatusRejected
 		usageEvent.HTTPStatus = policyHTTPStatus(err)
+		if errors.Is(err, policy.ErrRateLimited) {
+			h.metrics.IncRateLimitReject(principal.TenantID, matchedRoute.ID)
+		}
+		if errors.Is(err, policy.ErrQuotaExceeded) {
+			h.metrics.IncQuotaReject(principal.TenantID, matchedRoute.ID)
+		}
 		writePolicyError(w, err)
 		return
 	}
@@ -116,12 +132,14 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	protocolAdapter, ok := h.adapters.Protocol(sourceProtocol)
 	if !ok {
+		h.metrics.IncProtocolAdapterError(sourceProtocol, "decode")
 		writeAttemptError(http.StatusBadGateway, "protocol_adapter_not_found", "Protocol adapter not found", billing.StatusFailed)
 		return
 	}
 
 	upstreamAdapter, ok := h.adapters.Upstream(targetProtocol)
 	if !ok {
+		h.metrics.IncProtocolAdapterError(targetProtocol, "upstream")
 		writeAttemptError(http.StatusBadGateway, "upstream_adapter_not_found", "Upstream adapter not found", billing.StatusFailed)
 		return
 	}
@@ -144,6 +162,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		TargetProtocol: targetProtocol,
 	})
 	if err != nil {
+		h.metrics.IncProtocolAdapterError(sourceProtocol, "decode")
 		writeAttemptError(http.StatusBadRequest, "decode_error", "Request could not be decoded", billing.StatusFailed)
 		return
 	}
@@ -182,9 +201,13 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}, msg)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if targetProtocol == iso8583.Name {
+				h.metrics.IncISO8583Timeout(principal.TenantID, matchedRoute.ID)
+			}
 			writeAttemptError(http.StatusGatewayTimeout, "upstream_timeout", "Upstream request timed out", billing.StatusTimeout)
 			return
 		}
+		h.metrics.IncProtocolAdapterError(targetProtocol, "upstream")
 		writeAttemptError(http.StatusBadGateway, "upstream_error", "Upstream request failed", billing.StatusFailed)
 		return
 	}
@@ -202,6 +225,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	outbound, err := protocolAdapter.Encode(ctx, upstreamMsg)
 	if err != nil {
+		h.metrics.IncProtocolAdapterError(sourceProtocol, "encode")
 		writeAttemptError(http.StatusBadGateway, "encode_error", "Response could not be encoded", billing.StatusFailed)
 		return
 	}
@@ -227,7 +251,10 @@ func (h *GatewayHandler) emitUsageEvent(ctx context.Context, event billing.Usage
 	}
 	event.LatencyMs = time.Since(start).Milliseconds()
 	event.Billable = billing.BillableForStatus(event.Status, upstreamCalled)
-	_ = h.usageEvents.Save(context.WithoutCancel(ctx), event)
+	if err := h.usageEvents.Save(context.WithoutCancel(ctx), event); err != nil {
+		h.metrics.IncBillingEventFailure(event.TenantID, event.RouteID)
+		h.logger.ErrorContext(ctx, "billing usage event write failed", slog.String("tenant_id", event.TenantID), slog.String("route_id", event.RouteID), slog.Any("error", err))
+	}
 }
 
 func (h *GatewayHandler) evaluatePolicy(ctx context.Context, req policy.Request) error {

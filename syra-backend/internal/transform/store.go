@@ -19,10 +19,19 @@ type InMemoryStore struct {
 
 func NewInMemoryStore(templates ...Template) *InMemoryStore {
 	store := &InMemoryStore{templates: map[string]Template{}}
-	for _, template := range templates {
-		store.templates[key(template.TenantID, template.ID)] = template
-	}
+	store.Replace(templates...)
 	return store
+}
+
+func (s *InMemoryStore) Replace(templates ...Template) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := map[string]Template{}
+	for _, template := range templates {
+		next[key(template.TenantID, template.ID)] = template
+	}
+	s.templates = next
 }
 
 func (s *InMemoryStore) Find(ctx context.Context, tenantID string, templateID string) (Template, error) {

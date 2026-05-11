@@ -19,10 +19,19 @@ type InMemoryProfileStore struct {
 
 func NewInMemoryProfileStore(profiles ...Profile) *InMemoryProfileStore {
 	store := &InMemoryProfileStore{profiles: map[string]Profile{}}
-	for _, profile := range profiles {
-		store.profiles[profile.ID] = profile
-	}
+	store.Replace(profiles...)
 	return store
+}
+
+func (s *InMemoryProfileStore) Replace(profiles ...Profile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := map[string]Profile{}
+	for _, profile := range profiles {
+		next[profile.ID] = profile
+	}
+	s.profiles = next
 }
 
 func (s *InMemoryProfileStore) Find(ctx context.Context, profileID string) (Profile, error) {

@@ -17,6 +17,7 @@ type Config struct {
 	WriteTimeout           time.Duration
 	IdleTimeout            time.Duration
 	ShutdownTimeout        time.Duration
+	ConfigReloadInterval   time.Duration
 	RequestBodyLimit       int64
 }
 
@@ -32,6 +33,7 @@ func Load() Config {
 		WriteTimeout:           getenvDuration("HTTP_WRITE_TIMEOUT", 30*time.Second),
 		IdleTimeout:            getenvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
 		ShutdownTimeout:        getenvDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
+		ConfigReloadInterval:   getenvDuration("CONFIG_RELOAD_INTERVAL", 30*time.Second),
 		RequestBodyLimit:       getenvInt64("REQUEST_BODY_LIMIT_BYTES", 1<<20),
 	}
 }

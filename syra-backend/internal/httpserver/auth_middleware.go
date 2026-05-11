@@ -9,15 +9,17 @@ import (
 
 	"syra-backend/internal/auth"
 	"syra-backend/internal/billing"
+	"syra-backend/internal/observability"
 	restprotocol "syra-backend/internal/protocol/rest"
 	"syra-backend/pkg/ids"
 )
 
-func APIKeyAuth(store auth.CredentialStore, usageEvents billing.UsageEventStore) func(http.Handler) http.Handler {
+func APIKeyAuth(store auth.CredentialStore, usageEvents billing.UsageEventStore, metrics *observability.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rawKey, ok := apiKeyFromRequest(r)
 			if !ok {
+				metrics.IncAuthFailure("missing")
 				emitAuthRejectedUsageEvent(r.Context(), usageEvents, store, "", http.StatusUnauthorized)
 				writeError(w, http.StatusUnauthorized, "unauthorized", "Missing API key")
 				return
@@ -27,9 +29,11 @@ func APIKeyAuth(store auth.CredentialStore, usageEvents billing.UsageEventStore)
 			if err != nil {
 				switch {
 				case errors.Is(err, auth.ErrCredentialForbidden):
+					metrics.IncAuthFailure("forbidden")
 					emitAuthRejectedUsageEvent(r.Context(), usageEvents, store, rawKey, http.StatusForbidden)
 					writeError(w, http.StatusForbidden, "forbidden", "Credential is not allowed")
 				default:
+					metrics.IncAuthFailure("invalid")
 					emitAuthRejectedUsageEvent(r.Context(), usageEvents, store, rawKey, http.StatusUnauthorized)
 					writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid API key")
 				}

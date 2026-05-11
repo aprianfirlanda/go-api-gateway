@@ -12,6 +12,7 @@ import (
 	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
+	"syra-backend/internal/observability"
 	"syra-backend/internal/ports/input"
 	"syra-backend/internal/protocol"
 	restprotocol "syra-backend/internal/protocol/rest"
@@ -29,6 +30,7 @@ type Dependencies struct {
 	TransformEngine *transform.Engine
 	PolicyPipeline  *policy.Pipeline
 	UsageEventStore billing.UsageEventStore
+	Metrics         *observability.Metrics
 	BodyLimit       int64
 }
 
@@ -39,12 +41,18 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Use(ResponseRequestID)
 	r.Use(middleware.RealIP)
 	r.Use(Recoverer(deps.Logger))
+	if deps.Metrics != nil {
+		r.Use(deps.Metrics.Middleware)
+	}
 	r.Use(RequestLogger(deps.Logger))
 	r.Use(MaxBodyBytes(deps.BodyLimit))
 
 	healthHandler := NewHealthHandler(deps.HealthService)
 	r.Get("/healthz", healthHandler.Liveness)
 	r.Get("/readyz", healthHandler.Readiness)
+	if deps.Metrics != nil {
+		r.Handle("/metrics", deps.Metrics.Handler())
+	}
 
 	if deps.CredentialStore != nil && deps.RouteRegistry != nil && deps.UpstreamStore != nil {
 		adapterRegistry := deps.AdapterRegistry
@@ -58,9 +66,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		if transformEngine == nil {
 			transformEngine = transform.NewEngine()
 		}
-		gatewayHandler := NewGatewayHandler(deps.RouteRegistry, deps.UpstreamStore, adapterRegistry, deps.TemplateStore, transformEngine, deps.PolicyPipeline, deps.UsageEventStore)
+		gatewayHandler := NewGatewayHandler(deps.RouteRegistry, deps.UpstreamStore, adapterRegistry, deps.TemplateStore, transformEngine, deps.PolicyPipeline, deps.UsageEventStore, deps.Metrics, deps.Logger)
 		r.Group(func(protected chi.Router) {
-			protected.Use(APIKeyAuth(deps.CredentialStore, deps.UsageEventStore))
+			protected.Use(APIKeyAuth(deps.CredentialStore, deps.UsageEventStore, deps.Metrics))
 			protected.Handle("/*", gatewayHandler)
 		})
 	}

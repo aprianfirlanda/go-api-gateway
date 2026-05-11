@@ -46,10 +46,19 @@ type InMemoryCredentialStore struct {
 
 func NewInMemoryCredentialStore(credentials ...APIKeyCredential) *InMemoryCredentialStore {
 	store := &InMemoryCredentialStore{credentials: map[string]APIKeyCredential{}}
-	for _, credential := range credentials {
-		store.credentials[credential.KeyPrefix] = credential
-	}
+	store.Replace(credentials...)
 	return store
+}
+
+func (s *InMemoryCredentialStore) Replace(credentials ...APIKeyCredential) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := map[string]APIKeyCredential{}
+	for _, credential := range credentials {
+		next[credential.KeyPrefix] = credential
+	}
+	s.credentials = next
 }
 
 func (s *InMemoryCredentialStore) FindByPrefix(ctx context.Context, prefix string) (APIKeyCredential, error) {

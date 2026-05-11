@@ -31,6 +31,9 @@ func main() {
 		logger.Info("starting gateway", slog.String("addr", cfg.GatewayAddr))
 		errCh <- app.Server.ListenAndServe()
 	}()
+	if app.ConfigReload != nil {
+		app.ConfigReload.Start(ctx, cfg.ConfigReloadInterval)
+	}
 
 	select {
 	case <-ctx.Done():

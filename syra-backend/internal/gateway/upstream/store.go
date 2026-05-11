@@ -19,10 +19,19 @@ type InMemoryStore struct {
 
 func NewInMemoryStore(upstreams ...Upstream) *InMemoryStore {
 	store := &InMemoryStore{upstreams: map[string]Upstream{}}
-	for _, upstream := range upstreams {
-		store.upstreams[key(upstream.TenantID, upstream.ID)] = upstream
-	}
+	store.Replace(upstreams...)
 	return store
+}
+
+func (s *InMemoryStore) Replace(upstreams ...Upstream) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := map[string]Upstream{}
+	for _, upstream := range upstreams {
+		next[key(upstream.TenantID, upstream.ID)] = upstream
+	}
+	s.upstreams = next
 }
 
 func (s *InMemoryStore) Find(ctx context.Context, tenantID string, upstreamID string) (Upstream, error) {
