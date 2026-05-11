@@ -25,6 +25,7 @@ func main() {
 		logger.Error("build control plane app", slog.Any("error", err))
 		os.Exit(1)
 	}
+	defer app.Close()
 
 	errCh := make(chan error, 1)
 	go func() {

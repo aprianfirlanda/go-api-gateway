@@ -1,20 +1,29 @@
 package controlplane
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"syra-backend/internal/config"
 	cp "syra-backend/internal/controlplane"
+	"syra-backend/internal/storage/postgres"
 )
 
 type App struct {
 	Server *http.Server
-	Store  *cp.Store
+	Store  cp.Repository
+	pool   *pgxpool.Pool
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
-	store := cp.NewStore()
+	store, pool, err := openRepository(context.Background(), cfg)
+	if err != nil {
+		return nil, err
+	}
 	router := cp.NewRouter(cp.RouterConfig{
 		AdminToken: cfg.ControlPlaneAdminToken,
 		Store:      store,
@@ -29,5 +38,26 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			IdleTimeout:  cfg.IdleTimeout,
 		},
 		Store: store,
+		pool:  pool,
 	}, nil
+}
+
+func (a *App) Close() {
+	if a != nil && a.pool != nil {
+		a.pool.Close()
+	}
+}
+
+func openRepository(ctx context.Context, cfg config.Config) (cp.Repository, *pgxpool.Pool, error) {
+	if cfg.DatabaseURL == "" {
+		return cp.NewStore(), nil, nil
+	}
+	if err := postgres.Migrate(ctx, cfg.DatabaseURL, "migrations"); err != nil {
+		return nil, nil, fmt.Errorf("migrate control plane database: %w", err)
+	}
+	pool, err := postgres.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	return postgres.NewControlPlaneRepository(pool), pool, nil
 }

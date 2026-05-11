@@ -21,12 +21,12 @@ const actorPlatformAdmin = "platform_admin"
 
 type RouterConfig struct {
 	AdminToken string
-	Store      *Store
+	Store      Repository
 	Now        func() time.Time
 }
 
 type Handler struct {
-	store      *Store
+	store      Repository
 	adminToken string
 	now        func() time.Time
 }
