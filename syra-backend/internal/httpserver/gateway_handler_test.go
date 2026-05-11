@@ -378,6 +378,66 @@ func TestGatewayRouteTransformsRESTToSOAPXMLAndBackToREST(t *testing.T) {
 	require.Contains(t, metricsRec.Body.String(), "syra_gateway_requests_total")
 }
 
+func TestGatewayRouteRejectsUnpublishedTransformationTemplate(t *testing.T) {
+	usageEvents := billing.NewInMemoryUsageEventStore()
+	upstreamHits := atomic.Int64{}
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstreamServer.Close)
+
+	template := gatewaySOAPTransformTemplate()
+	template.Status = transform.StatusDraft
+	router := NewRouter(Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
+		HealthService: health.NewService(nil),
+		CredentialStore: auth.NewInMemoryCredentialStore(mustCredential(t, auth.APIKeyCredential{
+			ID:         "credential_1",
+			TenantID:   "tenant_1",
+			ConsumerID: "consumer_1",
+			KeyPrefix:  "gw_live_tenant_1",
+			Status:     auth.StatusActive,
+		})),
+		RouteRegistry: route.NewInMemoryRegistry(route.Route{
+			ID:               "route_soap",
+			TenantID:         "tenant_1",
+			APIProductID:     "product_1",
+			InboundProtocol:  restprotocol.Name,
+			OutboundProtocol: restprotocol.Name,
+			UpstreamRef:      "upstream_1",
+			TemplateRef:      template.ID,
+			Host:             "api.example.test",
+			Method:           http.MethodPost,
+			Path:             "/cards/authorization",
+			Status:           route.StatusActive,
+		}),
+		UpstreamStore: upstream.NewInMemoryStore(upstream.Upstream{
+			ID:       "upstream_1",
+			TenantID: "tenant_1",
+			Protocol: upstream.ProtocolREST,
+			BaseURL:  upstreamServer.URL,
+		}),
+		AdapterRegistry: newTestAdapterRegistry(t),
+		TemplateStore:   transform.NewInMemoryStore(template),
+		TransformEngine: transform.NewEngine(),
+		UsageEventStore: usageEvents,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://api.example.test/cards/authorization", strings.NewReader(`{"amount":10000}`))
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.JSONEq(t, `{"error":{"code":"template_not_published","message":"Transformation template is not published"}}`, rec.Body.String())
+	require.Equal(t, int64(0), upstreamHits.Load())
+	events := listUsageEvents(t, usageEvents)
+	require.Len(t, events, 1)
+	require.False(t, events[0].Billable)
+}
+
 type gatewayTestConfig struct {
 	credentialStatus   string
 	credentialTenantID string

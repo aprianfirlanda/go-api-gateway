@@ -182,6 +182,10 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAttemptError(http.StatusInternalServerError, "internal_error", "Internal server error", billing.StatusFailed)
 			return
 		}
+		if template.Status != transform.StatusPublished {
+			writeAttemptError(http.StatusBadGateway, "template_not_published", "Transformation template is not published", billing.StatusFailed)
+			return
+		}
 		msg, err = h.transforms.DryRun(ctx, template, transform.DirectionRequest, msg)
 		if err != nil {
 			writeAttemptError(http.StatusBadRequest, "transformation_error", "Request transformation failed", billing.StatusFailed)
