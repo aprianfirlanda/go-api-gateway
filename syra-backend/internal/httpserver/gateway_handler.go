@@ -5,43 +5,68 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/billing"
 	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/protocol"
 	restprotocol "syra-backend/internal/protocol/rest"
 	"syra-backend/internal/transform"
+	"syra-backend/pkg/ids"
 )
 
 type GatewayHandler struct {
-	routes     route.Registry
-	upstreams  upstream.Store
-	adapters   *protocol.Registry
-	templates  transform.Store
-	transforms *transform.Engine
-	policies   *policy.Pipeline
+	routes      route.Registry
+	upstreams   upstream.Store
+	adapters    *protocol.Registry
+	templates   transform.Store
+	transforms  *transform.Engine
+	policies    *policy.Pipeline
+	usageEvents billing.UsageEventStore
 }
 
-func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine, policies *policy.Pipeline) *GatewayHandler {
+func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine, policies *policy.Pipeline, usageEvents billing.UsageEventStore) *GatewayHandler {
 	return &GatewayHandler{
-		routes:     routes,
-		upstreams:  upstreams,
-		adapters:   adapters,
-		templates:  templates,
-		transforms: transforms,
-		policies:   policies,
+		routes:      routes,
+		upstreams:   upstreams,
+		adapters:    adapters,
+		templates:   templates,
+		transforms:  transforms,
+		policies:    policies,
+		usageEvents: usageEvents,
 	}
 }
 
 func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now().UTC()
+	usageEvent := billing.UsageEvent{
+		EventID:        ids.New(),
+		SourceProtocol: restprotocol.Name,
+		Status:         billing.StatusFailed,
+		OccurredAt:     start,
+	}
+	upstreamCalled := false
+	defer func() {
+		h.emitUsageEvent(r.Context(), usageEvent, start, upstreamCalled)
+	}()
+
+	writeAttemptError := func(status int, code string, message string, eventStatus string) {
+		usageEvent.HTTPStatus = status
+		usageEvent.Status = eventStatus
+		writeError(w, status, code, message)
+	}
+
 	principal, ok := auth.PrincipalFromContext(r.Context())
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "Missing principal")
+		writeAttemptError(http.StatusUnauthorized, "unauthorized", "Missing principal", billing.StatusRejected)
 		return
 	}
+	usageEvent.TenantID = principal.TenantID
+	usageEvent.ConsumerID = principal.ConsumerID
 
 	matchedRoute, err := h.routes.Match(r.Context(), route.MatchRequest{
 		TenantID: principal.TenantID,
@@ -51,14 +76,17 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, route.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "route_not_found", "Route not found")
+			writeAttemptError(http.StatusNotFound, "route_not_found", "Route not found", billing.StatusRejected)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error")
+		writeAttemptError(http.StatusInternalServerError, "internal_error", "Internal server error", billing.StatusFailed)
 		return
 	}
+	usageEvent.APIProductID = matchedRoute.APIProductID
+	usageEvent.RouteID = matchedRoute.ID
 
 	sourceProtocol := protocolName(matchedRoute.InboundProtocol, restprotocol.Name)
+	usageEvent.SourceProtocol = sourceProtocol
 	if err := h.evaluatePolicy(r.Context(), policy.Request{
 		TenantID:   principal.TenantID,
 		ConsumerID: principal.ConsumerID,
@@ -67,6 +95,8 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		RemoteAddr: r.RemoteAddr,
 		SizeBytes:  r.ContentLength,
 	}); err != nil {
+		usageEvent.Status = billing.StatusRejected
+		usageEvent.HTTPStatus = policyHTTPStatus(err)
 		writePolicyError(w, err)
 		return
 	}
@@ -74,24 +104,25 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	target, err := h.upstreams.Find(r.Context(), principal.TenantID, matchedRoute.UpstreamRef)
 	if err != nil {
 		if errors.Is(err, upstream.ErrNotFound) {
-			writeError(w, http.StatusBadGateway, "upstream_not_found", "Upstream not found")
+			writeAttemptError(http.StatusBadGateway, "upstream_not_found", "Upstream not found", billing.StatusFailed)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error")
+		writeAttemptError(http.StatusInternalServerError, "internal_error", "Internal server error", billing.StatusFailed)
 		return
 	}
 
 	targetProtocol := protocolName(matchedRoute.OutboundProtocol, string(target.Protocol))
+	usageEvent.TargetProtocol = targetProtocol
 
 	protocolAdapter, ok := h.adapters.Protocol(sourceProtocol)
 	if !ok {
-		writeError(w, http.StatusBadGateway, "protocol_adapter_not_found", "Protocol adapter not found")
+		writeAttemptError(http.StatusBadGateway, "protocol_adapter_not_found", "Protocol adapter not found", billing.StatusFailed)
 		return
 	}
 
 	upstreamAdapter, ok := h.adapters.Upstream(targetProtocol)
 	if !ok {
-		writeError(w, http.StatusBadGateway, "upstream_adapter_not_found", "Upstream adapter not found")
+		writeAttemptError(http.StatusBadGateway, "upstream_adapter_not_found", "Upstream adapter not found", billing.StatusFailed)
 		return
 	}
 
@@ -113,32 +144,33 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		TargetProtocol: targetProtocol,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "decode_error", "Request could not be decoded")
+		writeAttemptError(http.StatusBadRequest, "decode_error", "Request could not be decoded", billing.StatusFailed)
 		return
 	}
 
 	var template transform.Template
 	if matchedRoute.TemplateRef != "" {
 		if h.templates == nil {
-			writeError(w, http.StatusBadGateway, "template_not_found", "Transformation template not found")
+			writeAttemptError(http.StatusBadGateway, "template_not_found", "Transformation template not found", billing.StatusFailed)
 			return
 		}
 		template, err = h.templates.Find(ctx, principal.TenantID, matchedRoute.TemplateRef)
 		if err != nil {
 			if errors.Is(err, transform.ErrTemplateNotFound) {
-				writeError(w, http.StatusBadGateway, "template_not_found", "Transformation template not found")
+				writeAttemptError(http.StatusBadGateway, "template_not_found", "Transformation template not found", billing.StatusFailed)
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error")
+			writeAttemptError(http.StatusInternalServerError, "internal_error", "Internal server error", billing.StatusFailed)
 			return
 		}
 		msg, err = h.transforms.DryRun(ctx, template, transform.DirectionRequest, msg)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "transformation_error", "Request transformation failed")
+			writeAttemptError(http.StatusBadRequest, "transformation_error", "Request transformation failed", billing.StatusFailed)
 			return
 		}
 	}
 
+	upstreamCalled = true
 	upstreamMsg, err := upstreamAdapter.Call(ctx, protocol.UpstreamTarget{
 		ID:       target.ID,
 		TenantID: target.TenantID,
@@ -150,28 +182,52 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}, msg)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			writeError(w, http.StatusGatewayTimeout, "upstream_timeout", "Upstream request timed out")
+			writeAttemptError(http.StatusGatewayTimeout, "upstream_timeout", "Upstream request timed out", billing.StatusTimeout)
 			return
 		}
-		writeError(w, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+		writeAttemptError(http.StatusBadGateway, "upstream_error", "Upstream request failed", billing.StatusFailed)
 		return
+	}
+	if upstreamMsg.StatusCode != 0 {
+		usageEvent.UpstreamStatus = strconv.Itoa(upstreamMsg.StatusCode)
 	}
 
 	if matchedRoute.TemplateRef != "" {
 		upstreamMsg, err = h.transforms.DryRun(ctx, template, transform.DirectionResponse, upstreamMsg)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "transformation_error", "Response transformation failed")
+			writeAttemptError(http.StatusBadGateway, "transformation_error", "Response transformation failed", billing.StatusFailed)
 			return
 		}
 	}
 
 	outbound, err := protocolAdapter.Encode(ctx, upstreamMsg)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "encode_error", "Response could not be encoded")
+		writeAttemptError(http.StatusBadGateway, "encode_error", "Response could not be encoded", billing.StatusFailed)
 		return
 	}
 
+	usageEvent.HTTPStatus = outbound.StatusCode
+	if usageEvent.HTTPStatus == 0 {
+		usageEvent.HTTPStatus = http.StatusOK
+	}
+	if usageEvent.HTTPStatus >= http.StatusInternalServerError {
+		usageEvent.Status = billing.StatusFailed
+	} else {
+		usageEvent.Status = billing.StatusSuccess
+	}
 	writeOutboundResponse(w, outbound)
+}
+
+func (h *GatewayHandler) emitUsageEvent(ctx context.Context, event billing.UsageEvent, start time.Time, upstreamCalled bool) {
+	if h.usageEvents == nil {
+		return
+	}
+	if event.HTTPStatus == 0 {
+		event.HTTPStatus = http.StatusInternalServerError
+	}
+	event.LatencyMs = time.Since(start).Milliseconds()
+	event.Billable = billing.BillableForStatus(event.Status, upstreamCalled)
+	_ = h.usageEvents.Save(context.WithoutCancel(ctx), event)
 }
 
 func (h *GatewayHandler) evaluatePolicy(ctx context.Context, req policy.Request) error {
@@ -214,16 +270,50 @@ func writeOutboundResponse(w http.ResponseWriter, resp protocol.OutboundResponse
 }
 
 func writePolicyError(w http.ResponseWriter, err error) {
+	writeError(w, policyHTTPStatus(err), policyErrorCode(err), policyErrorMessage(err))
+}
+
+func policyHTTPStatus(err error) int {
 	switch {
 	case errors.Is(err, policy.ErrBlockedIP):
-		writeError(w, http.StatusForbidden, "blocked_ip", "IP address is not allowed")
+		return http.StatusForbidden
 	case errors.Is(err, policy.ErrRequestTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "Request is too large")
+		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, policy.ErrRateLimited):
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "Rate limit exceeded")
+		return http.StatusTooManyRequests
 	case errors.Is(err, policy.ErrQuotaExceeded):
-		writeError(w, http.StatusForbidden, "quota_exceeded", "Quota exceeded")
+		return http.StatusForbidden
 	default:
-		writeError(w, http.StatusInternalServerError, "policy_error", "Policy evaluation failed")
+		return http.StatusInternalServerError
+	}
+}
+
+func policyErrorCode(err error) string {
+	switch {
+	case errors.Is(err, policy.ErrBlockedIP):
+		return "blocked_ip"
+	case errors.Is(err, policy.ErrRequestTooLarge):
+		return "request_too_large"
+	case errors.Is(err, policy.ErrRateLimited):
+		return "rate_limited"
+	case errors.Is(err, policy.ErrQuotaExceeded):
+		return "quota_exceeded"
+	default:
+		return "policy_error"
+	}
+}
+
+func policyErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, policy.ErrBlockedIP):
+		return "IP address is not allowed"
+	case errors.Is(err, policy.ErrRequestTooLarge):
+		return "Request is too large"
+	case errors.Is(err, policy.ErrRateLimited):
+		return "Rate limit exceeded"
+	case errors.Is(err, policy.ErrQuotaExceeded):
+		return "Quota exceeded"
+	default:
+		return "Policy evaluation failed"
 	}
 }

@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/binary"
 	"log/slog"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/billing"
 	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
@@ -283,6 +285,7 @@ type gatewayTestConfig struct {
 	upstreamBaseURL    string
 	timeoutMs          int
 	policies           *policy.Pipeline
+	usageEvents        billing.UsageEventStore
 }
 
 func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
@@ -348,7 +351,143 @@ func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
 		}),
 		AdapterRegistry: newTestAdapterRegistry(t),
 		PolicyPipeline:  cfg.policies,
+		UsageEventStore: cfg.usageEvents,
 	})
+}
+
+func TestGatewayRouteEmitsSuccessfulUsageEvent(t *testing.T) {
+	usageEvents := billing.NewInMemoryUsageEventStore()
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(upstreamServer.Close)
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		upstreamBaseURL: upstreamServer.URL,
+		usageEvents:     usageEvents,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+	events := listUsageEvents(t, usageEvents)
+	require.Len(t, events, 1)
+	require.NotEmpty(t, events[0].EventID)
+	require.Equal(t, "tenant_1", events[0].TenantID)
+	require.Equal(t, "consumer_1", events[0].ConsumerID)
+	require.Equal(t, "product_1", events[0].APIProductID)
+	require.Equal(t, "route_1", events[0].RouteID)
+	require.Equal(t, restprotocol.Name, events[0].SourceProtocol)
+	require.Equal(t, restprotocol.Name, events[0].TargetProtocol)
+	require.Equal(t, billing.StatusSuccess, events[0].Status)
+	require.Equal(t, http.StatusCreated, events[0].HTTPStatus)
+	require.Equal(t, "201", events[0].UpstreamStatus)
+	require.True(t, events[0].Billable)
+	require.NotZero(t, events[0].OccurredAt)
+}
+
+func TestGatewayRouteEmitsRejectedUsageEvent(t *testing.T) {
+	usageEvents := billing.NewInMemoryUsageEventStore()
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		policies:    policy.NewPipeline(policy.NewRequestSizeLimitPolicy(3)),
+		usageEvents: usageEvents,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", strings.NewReader("abcd"))
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	events := listUsageEvents(t, usageEvents)
+	require.Len(t, events, 1)
+	require.Equal(t, billing.StatusRejected, events[0].Status)
+	require.Equal(t, http.StatusRequestEntityTooLarge, events[0].HTTPStatus)
+	require.False(t, events[0].Billable)
+}
+
+func TestGatewayRouteEmitsRejectedUsageEventForInvalidAPIKey(t *testing.T) {
+	usageEvents := billing.NewInMemoryUsageEventStore()
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		usageEvents: usageEvents,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.wrong")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	events := listUsageEvents(t, usageEvents)
+	require.Len(t, events, 1)
+	require.Equal(t, "tenant_1", events[0].TenantID)
+	require.Equal(t, "consumer_1", events[0].ConsumerID)
+	require.Equal(t, billing.StatusRejected, events[0].Status)
+	require.Equal(t, http.StatusUnauthorized, events[0].HTTPStatus)
+	require.False(t, events[0].Billable)
+	require.NotContains(t, eventValues(events[0]), "wrong")
+}
+
+func TestGatewayRouteEmitsFailedBillableUsageEvent(t *testing.T) {
+	usageEvents := billing.NewInMemoryUsageEventStore()
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"upstream failed","pan":"4111111111111111"}`))
+	}))
+	t.Cleanup(upstreamServer.Close)
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		upstreamBaseURL: upstreamServer.URL,
+		usageEvents:     usageEvents,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", strings.NewReader(`{"pan":"4111111111111111","cvv":"123"}`))
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	events := listUsageEvents(t, usageEvents)
+	require.Len(t, events, 1)
+	require.Equal(t, billing.StatusFailed, events[0].Status)
+	require.Equal(t, http.StatusInternalServerError, events[0].HTTPStatus)
+	require.Equal(t, "500", events[0].UpstreamStatus)
+	require.True(t, events[0].Billable)
+	require.NotContains(t, eventValues(events[0]), "4111111111111111")
+	require.NotContains(t, eventValues(events[0]), "123")
+}
+
+func TestGatewayRouteEmitsTimeoutUsageEvent(t *testing.T) {
+	usageEvents := billing.NewInMemoryUsageEventStore()
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(75 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstreamServer.Close)
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		upstreamBaseURL: upstreamServer.URL,
+		timeoutMs:       10,
+		usageEvents:     usageEvents,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusGatewayTimeout, rec.Code)
+	events := listUsageEvents(t, usageEvents)
+	require.Len(t, events, 1)
+	require.Equal(t, billing.StatusTimeout, events[0].Status)
+	require.Equal(t, http.StatusGatewayTimeout, events[0].HTTPStatus)
+	require.True(t, events[0].Billable)
 }
 
 func TestGatewayRouteBlocksIPPolicy(t *testing.T) {
@@ -468,6 +607,28 @@ func mustCredential(t *testing.T, credential auth.APIKeyCredential) auth.APIKeyC
 
 	credential.SecretHash = secretHash
 	return credential
+}
+
+func listUsageEvents(t *testing.T, store billing.UsageEventStore) []billing.UsageEvent {
+	t.Helper()
+
+	events, err := store.List(context.Background(), billing.UsageEventFilter{})
+	require.NoError(t, err)
+	return events
+}
+
+func eventValues(event billing.UsageEvent) string {
+	return strings.Join([]string{
+		event.EventID,
+		event.TenantID,
+		event.ConsumerID,
+		event.APIProductID,
+		event.RouteID,
+		event.SourceProtocol,
+		event.TargetProtocol,
+		event.Status,
+		event.UpstreamStatus,
+	}, " ")
 }
 
 func newTestAdapterRegistry(t *testing.T) *protocol.Registry {

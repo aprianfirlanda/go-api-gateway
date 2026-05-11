@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/billing"
 	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
@@ -27,6 +28,7 @@ type Dependencies struct {
 	TemplateStore   transform.Store
 	TransformEngine *transform.Engine
 	PolicyPipeline  *policy.Pipeline
+	UsageEventStore billing.UsageEventStore
 	BodyLimit       int64
 }
 
@@ -56,9 +58,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		if transformEngine == nil {
 			transformEngine = transform.NewEngine()
 		}
-		gatewayHandler := NewGatewayHandler(deps.RouteRegistry, deps.UpstreamStore, adapterRegistry, deps.TemplateStore, transformEngine, deps.PolicyPipeline)
+		gatewayHandler := NewGatewayHandler(deps.RouteRegistry, deps.UpstreamStore, adapterRegistry, deps.TemplateStore, transformEngine, deps.PolicyPipeline, deps.UsageEventStore)
 		r.Group(func(protected chi.Router) {
-			protected.Use(APIKeyAuth(deps.CredentialStore))
+			protected.Use(APIKeyAuth(deps.CredentialStore, deps.UsageEventStore))
 			protected.Handle("/*", gatewayHandler)
 		})
 	}

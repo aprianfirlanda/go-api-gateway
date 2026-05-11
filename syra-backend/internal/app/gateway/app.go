@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/billing"
 	"syra-backend/internal/config"
 	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
@@ -46,6 +47,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		TemplateStore:   transform.NewInMemoryStore(),
 		TransformEngine: transform.NewEngine(),
 		PolicyPipeline:  policy.NewPipeline(),
+		UsageEventStore: billing.NewInMemoryUsageEventStore(),
 		BodyLimit:       cfg.RequestBodyLimit,
 	})
 
