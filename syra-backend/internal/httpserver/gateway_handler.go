@@ -197,6 +197,10 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		BaseURL:  target.BaseURL,
 		Metadata: map[string]string{
 			"iso8583ProfileId": target.ISO8583ProfileID,
+			"soapAction":       target.SOAPAction,
+			"soapOperation":    target.SOAPOperation,
+			"soapNamespace":    target.SOAPNamespace,
+			"soapResponsePath": target.SOAPResponsePath,
 		},
 	}, msg)
 	if err != nil {

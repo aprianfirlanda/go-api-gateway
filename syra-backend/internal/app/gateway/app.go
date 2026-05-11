@@ -18,6 +18,7 @@ import (
 	"syra-backend/internal/protocol"
 	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
+	"syra-backend/internal/protocol/soapxml"
 	"syra-backend/internal/transform"
 )
 
@@ -39,6 +40,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	profileStore := iso8583.NewInMemoryProfileStore()
 	isoAdapter := iso8583.NewAdapter(nil, profileStore, nil)
 	if err := adapterRegistry.RegisterUpstream(isoAdapter); err != nil {
+		return nil, err
+	}
+	soapAdapter := soapxml.NewAdapter(nil)
+	if err := adapterRegistry.RegisterUpstream(soapAdapter); err != nil {
 		return nil, err
 	}
 	credentialStore := auth.NewInMemoryCredentialStore()

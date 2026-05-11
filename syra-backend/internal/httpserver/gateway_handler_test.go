@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,9 +21,11 @@ import (
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/health"
+	"syra-backend/internal/observability"
 	"syra-backend/internal/protocol"
 	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
+	"syra-backend/internal/protocol/soapxml"
 	"syra-backend/internal/transform"
 )
 
@@ -274,6 +277,105 @@ func TestGatewayRouteTransformsRESTToISO8583AndBackToREST(t *testing.T) {
 	require.Equal(t, "123456", fields["11"])
 	require.Equal(t, "ATM00101", fields["41"])
 	require.Equal(t, "360", fields["49"])
+}
+
+func TestGatewayRouteTransformsRESTToSOAPXMLAndBackToREST(t *testing.T) {
+	usageEvents := billing.NewInMemoryUsageEventStore()
+	metrics := observability.NewMetrics()
+	var upstreamBody string
+	var upstreamSOAPAction string
+	var upstreamHits atomic.Int64
+	soapServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = string(body)
+		upstreamSOAPAction = r.Header.Get("SOAPAction")
+		w.Header().Set("Content-Type", "text/xml")
+		_, _ = w.Write([]byte(`<?xml version="1.0"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <AuthorizeResponse>
+      <responseCode>00</responseCode>
+      <authorizationCode>A12345</authorizationCode>
+      <rrn>654321</rrn>
+    </AuthorizeResponse>
+  </soapenv:Body>
+</soapenv:Envelope>`))
+	}))
+	t.Cleanup(soapServer.Close)
+
+	router := NewRouter(Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
+		HealthService: health.NewService(nil),
+		CredentialStore: auth.NewInMemoryCredentialStore(mustCredential(t, auth.APIKeyCredential{
+			ID:         "credential_1",
+			TenantID:   "tenant_1",
+			ConsumerID: "consumer_1",
+			KeyPrefix:  "gw_live_tenant_1",
+			Status:     auth.StatusActive,
+		})),
+		RouteRegistry: route.NewInMemoryRegistry(route.Route{
+			ID:               "route_soap",
+			TenantID:         "tenant_1",
+			APIProductID:     "product_1",
+			InboundProtocol:  restprotocol.Name,
+			OutboundProtocol: soapxml.Name,
+			UpstreamRef:      "soap_1",
+			TemplateRef:      "template_soap",
+			Host:             "api.example.test",
+			Method:           http.MethodPost,
+			Path:             "/cards/authorization",
+			TimeoutMs:        500,
+			Status:           route.StatusActive,
+		}),
+		UpstreamStore: upstream.NewInMemoryStore(upstream.Upstream{
+			ID:               "soap_1",
+			TenantID:         "tenant_1",
+			Protocol:         upstream.ProtocolSOAPXML,
+			BaseURL:          soapServer.URL,
+			SOAPAction:       "Authorize",
+			SOAPOperation:    "AuthorizeRequest",
+			SOAPNamespace:    "urn:bank",
+			SOAPResponsePath: "AuthorizeResponse",
+		}),
+		AdapterRegistry: newTestAdapterRegistryWithSOAP(t),
+		TemplateStore:   transform.NewInMemoryStore(gatewaySOAPTransformTemplate()),
+		TransformEngine: transform.NewEngine(),
+		PolicyPipeline:  policy.NewPipeline(policy.NewRequestSizeLimitPolicy(1024)),
+		UsageEventStore: usageEvents,
+		Metrics:         metrics,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://api.example.test/cards/authorization", strings.NewReader(`{
+		"pan":"4111111111111111",
+		"amount":10000,
+		"currency":"IDR",
+		"terminalId":"ATM00101"
+	}`))
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	req.Header.Set("Content-Type", "application/json")
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"authorizationCode":"A12345","responseCode":"00","rrn":"654321"}`, rec.Body.String())
+	require.Equal(t, int64(1), upstreamHits.Load())
+	require.Equal(t, "Authorize", upstreamSOAPAction)
+	require.Contains(t, upstreamBody, `<ns:AuthorizeRequest>`)
+	require.Contains(t, upstreamBody, `<ns:pan>4111111111111111</ns:pan>`)
+	require.Contains(t, upstreamBody, `<ns:amount>000000010000</ns:amount>`)
+
+	events := listUsageEvents(t, usageEvents)
+	require.Len(t, events, 1)
+	require.Equal(t, billing.StatusSuccess, events[0].Status)
+	require.Equal(t, soapxml.Name, events[0].TargetProtocol)
+	require.True(t, events[0].Billable)
+
+	metricsRec := httptest.NewRecorder()
+	router.ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "http://api.example.test/metrics", nil))
+	require.Equal(t, http.StatusOK, metricsRec.Code)
+	require.Contains(t, metricsRec.Body.String(), "syra_gateway_requests_total")
 }
 
 type gatewayTestConfig struct {
@@ -650,6 +752,14 @@ func newTestAdapterRegistryWithISO(t *testing.T, profiles iso8583.ProfileStore) 
 	return registry
 }
 
+func newTestAdapterRegistryWithSOAP(t *testing.T) *protocol.Registry {
+	t.Helper()
+
+	registry := newTestAdapterRegistry(t)
+	require.NoError(t, registry.RegisterUpstream(soapxml.NewAdapter(http.DefaultClient)))
+	return registry
+}
+
 func gatewayISOTransformTemplate() transform.Template {
 	return transform.Template{
 		ID:             "template_1",
@@ -677,6 +787,35 @@ func gatewayISOTransformTemplate() transform.Template {
 				"responseCode":      "$.fields.39",
 				"authorizationCode": "$.fields.38",
 				"stan":              "$.fields.11",
+			},
+		},
+	}
+}
+
+func gatewaySOAPTransformTemplate() transform.Template {
+	return transform.Template{
+		ID:             "template_soap",
+		TenantID:       "tenant_1",
+		APIProductID:   "product_1",
+		Name:           "rest-to-soap-card-auth",
+		SourceProtocol: restprotocol.Name,
+		TargetProtocol: soapxml.Name,
+		Version:        1,
+		Status:         transform.StatusPublished,
+		Request: transform.Section{
+			Fields: map[string]string{
+				"pan":        "$.fields.pan",
+				"amount":     "formatAmount($.fields.amount)",
+				"currency":   "$.fields.currency",
+				"terminalId": "$.fields.terminalId",
+			},
+			Sensitive: []string{"pan"},
+		},
+		Response: transform.Section{
+			Fields: map[string]string{
+				"responseCode":      "$.fields.responseCode",
+				"authorizationCode": "$.fields.authorizationCode",
+				"rrn":               "$.fields.rrn",
 			},
 		},
 	}
