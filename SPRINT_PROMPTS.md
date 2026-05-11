@@ -345,7 +345,273 @@ Fix any gaps that are reasonable to complete now.
 Produce a concise summary of what works, what remains, and how to run the gateway locally.
 ```
 
-## 17. Prompt If a Sprint Gets Too Large
+## 17. Sprint 14 Prompt
+
+```text
+Implement Sprint 14: Control Plane to Gateway Config Sync from IMPLEMENTATION_PLAN.md.
+
+Build on the existing code from Sprint 13 and the MVP verification work.
+Work inside syra-backend/.
+
+Goal:
+- Make the locally running control plane and gateway work together for end-to-end manual demos.
+
+Add:
+- PostgreSQL-backed runtime config loader for the gateway
+- conversion from active control plane records into runtime config snapshots
+- initial gateway snapshot load from storage when DATABASE_URL is configured
+- periodic gateway reload from the PostgreSQL config source
+- config version increment when admin-managed runtime resources change
+- last-known-good behavior when database config is incomplete or invalid
+- tests that create config through repositories and execute a gateway request after reload
+- documentation updates for the local control plane to gateway flow
+
+Verify:
+- admin-created active routes can be loaded by the gateway
+- published templates are required for routes that reference transformations
+- disabled routes, upstreams, credentials, and tenants are excluded or rejected
+- invalid database config does not replace the current runtime snapshot
+
+Run go test ./... from inside syra-backend/ and fix failures.
+Do not implement Sprint 15 yet.
+```
+
+## 18. Sprint 15 Prompt
+
+```text
+Implement Sprint 15: Redis Runtime State Foundation from IMPLEMENTATION_PLAN.md.
+
+Build on the existing code from Sprint 14.
+Work inside syra-backend/.
+
+Use TECHNOLOGY_DECISIONS.md:
+- Redis through github.com/redis/go-redis/v9
+- testcontainers-go for Redis integration tests
+
+Add:
+- github.com/redis/go-redis/v9 dependency
+- internal Redis client package using REDIS_ADDR and timeout configuration
+- runtime state store interface for short-lived keys, counters, TTLs, and compare-and-set style operations where needed
+- Redis-backed runtime state store implementation
+- in-memory runtime state store implementation for tests and single-process development
+- Redis readiness checks when Redis-backed features are enabled
+- Redis connection metrics and structured logs
+- testcontainers-go Redis integration tests
+- manual testing documentation updates explaining when Redis is required
+
+Verify:
+- Redis-backed runtime state store can set, get, increment, expire, and delete tenant-scoped keys
+- in-memory runtime state store can be used by unit tests without Redis
+- readiness reports Redis health only when Redis-backed runtime features are enabled
+- Redis keys are namespaced by environment, tenant, feature, and version where applicable
+
+Run go test ./... from inside syra-backend/ and fix failures.
+Do not implement Sprint 16 yet.
+```
+
+## 19. Sprint 16 Prompt
+
+```text
+Implement Sprint 16: Runtime Authorization and Security Hardening from IMPLEMENTATION_PLAN.md.
+
+Build on the existing code from Sprint 15.
+Work inside syra-backend/.
+
+Follow SECURITY_DESIGN.md closely.
+
+Add:
+- runtime tenant status enforcement
+- runtime consumer status enforcement
+- credential status, expiration, and scope enforcement
+- API product or route scope requirements
+- optional HMAC request signature verification for selected routes
+- replay protection primitives using nonce, timestamp, and the Redis runtime state store
+- idempotency key handling for configured unsafe methods
+- stronger sensitive data masking for logs, audit events, usage events, and errors
+- tests for disabled tenants, disabled consumers, expired credentials, missing scopes, invalid signatures, replayed requests, idempotency behavior, and masking
+
+Verify:
+- disabled tenant traffic is rejected
+- revoked, suspended, or expired credentials cannot call routes
+- missing required scopes return 403
+- HMAC-protected routes reject invalid or replayed requests
+- sensitive request and response payload values do not appear in logs, audit records, billing records, or error responses
+
+Run go test ./... from inside syra-backend/ and fix failures.
+Do not implement Sprint 17 yet.
+```
+
+## 20. Sprint 17 Prompt
+
+```text
+Implement Sprint 17: Billing Admin APIs and Usage Reporting from IMPLEMENTATION_PLAN.md.
+
+Build on the existing code from Sprint 16.
+Work inside syra-backend/.
+
+Follow BILLING_DESIGN.md and API_SPEC.md.
+
+Add:
+- billing plan CRUD APIs
+- usage event query APIs with tenant, route, consumer, status, and time filters
+- billing summary query APIs by tenant and billing period
+- billing summary generation endpoint or worker command
+- overage and billable unit breakdowns in billing summary responses
+- CSV or JSON export for usage summaries
+- pagination for usage event reads
+- audit events for billing plan and billing summary admin actions
+- tests for billing APIs, tenant isolation, pagination, overage calculation, and audit behavior
+
+Verify:
+- admins can create and update billing plans
+- admins can query usage events without seeing sensitive payload data
+- billing summaries can be generated and read by period
+- overage calculation is visible in API responses
+- tenant-scoped usage queries cannot leak another tenant's events
+
+Run go test ./... from inside syra-backend/ and fix failures.
+Do not implement Sprint 18 yet.
+```
+
+## 21. Sprint 18 Prompt
+
+```text
+Implement Sprint 18: Admin Audit, RBAC, and Operator APIs from IMPLEMENTATION_PLAN.md.
+
+Build on the existing code from Sprint 17.
+Work inside syra-backend/.
+
+Follow SECURITY_DESIGN.md and API_SPEC.md.
+
+Add:
+- admin identity abstraction to replace the single development admin token internally
+- platform admin and tenant admin roles
+- role checks for tenant-scoped and platform-scoped admin APIs
+- audit log read APIs with tenant, actor, action, resource, and time filters
+- immutable audit event repository behavior
+- admin API key or bootstrap admin credential support
+- tests for role authorization, audit log reads, denied admin actions, and immutable audit records
+
+Verify:
+- platform admins can manage all tenants
+- tenant admins can manage only their assigned tenant
+- denied admin actions do not mutate state
+- audit logs can be queried without exposing secrets
+- audit records cannot be updated or deleted through repositories
+
+Run go test ./... from inside syra-backend/ and fix failures.
+Do not implement Sprint 19 yet.
+```
+
+## 22. Sprint 19 Prompt
+
+```text
+Implement Sprint 19: Policy Persistence and Distributed Enforcement from IMPLEMENTATION_PLAN.md.
+
+Build on the existing code from Sprint 18.
+Work inside syra-backend/.
+
+Use TECHNOLOGY_DECISIONS.md:
+- Redis through github.com/redis/go-redis/v9
+- hand-written SQL with repository interfaces
+- testcontainers-go for integration tests where useful
+
+Add:
+- rate limit policy CRUD APIs
+- quota policy CRUD APIs
+- persisted policy assignments on routes or API products
+- Redis-backed rate limiter implementation using the runtime state store
+- Redis-backed quota counter implementation using the runtime state store
+- fixed-window or sliding-window behavior based on policy configuration
+- tests for policy persistence, distributed counters, route-level policies, API-product-level policies, and Redis fallback behavior
+
+Verify:
+- admin-created policies are loaded into gateway runtime config
+- rate limit behavior is consistent across gateway instances using Redis
+- quota counters are tenant-scoped and period-aware
+- gateway behavior is explicit when Redis is unavailable
+
+Run go test ./... from inside syra-backend/ and fix failures.
+Do not implement Sprint 20 yet.
+```
+
+## 23. Sprint 20 Prompt
+
+```text
+Implement Sprint 20: Advanced Adapter Expansion from IMPLEMENTATION_PLAN.md.
+
+Build on the existing code from Sprint 19.
+Work inside syra-backend/.
+
+Keep protocol-specific code behind adapter interfaces.
+Do not bypass the shared auth, policy, transformation, billing, and observability pipeline.
+
+Add at least two of these adapter proofs:
+- gRPC outbound proof adapter
+- GraphQL facade proof adapter
+- webhook outbound delivery proof
+- file-based ingestion or delivery proof
+
+Also add:
+- route configuration validation for each new adapter type
+- integration tests for the selected adapters
+- tests proving failed adapter calls emit usage events and metrics
+- documentation showing how to manually test the selected adapters
+
+Verify:
+- the selected adapter proofs work through the same gateway route execution model
+- adapter-specific configs are validated before publish or reload
+- failed adapter calls emit usage events and metrics
+- no protocol-specific shortcut bypasses auth, policy, billing, or observability
+
+Run go test ./... from inside syra-backend/ and fix failures.
+Do not implement Sprint 21 yet.
+```
+
+## 24. Sprint 21 Prompt
+
+```text
+Implement Sprint 21: Production Readiness and Deployment from IMPLEMENTATION_PLAN.md.
+
+Build on the existing code from Sprint 20.
+Work inside syra-backend/ unless updating root-level documentation.
+
+Add:
+- Dockerfiles for gateway, control plane, and optional workers
+- production-oriented compose file for local multi-service testing
+- Kubernetes manifests or Helm chart skeleton
+- migration command or startup migration documentation
+- readiness checks for PostgreSQL, Redis, and config load status
+- graceful shutdown tests for in-flight requests
+- load test scripts for REST and REST to ISO8583 paths
+- runbooks for local development, manual testing, migrations, and troubleshooting
+
+Verify:
+- services can be built into containers
+- local compose can run gateway, control plane, PostgreSQL, and Redis together
+- readiness accurately reports dependency and config status
+- operators have documented commands for migrations, startup, shutdown, and troubleshooting
+
+Run go test ./... from inside syra-backend/ and fix failures.
+Do not add new product scope beyond Sprint 21.
+```
+
+## 25. Multi-Feature Planning Prompt
+
+Use this when you want to update the roadmap again before implementing code.
+
+```text
+Review IMPLEMENTATION_PLAN.md, SPRINT_PROMPTS.md, PRODUCT_DESIGN.md, TECHNICAL_DESIGN.md, SECURITY_DESIGN.md, BILLING_DESIGN.md, and TRANSFORMATION_DESIGN.md.
+
+Propose the next multiple-feature roadmap after the current last sprint.
+Update IMPLEMENTATION_PLAN.md with sprint goals, scope, and done criteria.
+Update SPRINT_PROMPTS.md with copy-paste prompts for each new sprint.
+
+Do not implement code.
+Keep all implementation work scoped to syra-backend/ in the prompts.
+```
+
+## 26. Prompt If a Sprint Gets Too Large
 
 If a sprint becomes too large, use:
 
@@ -353,7 +619,7 @@ If a sprint becomes too large, use:
 Continue the current sprint only. Finish the smallest coherent slice, add tests, run them, and summarize what remains for this sprint.
 ```
 
-## 18. Prompt For Bug Fixing
+## 27. Prompt For Bug Fixing
 
 Use this when tests fail after a sprint:
 

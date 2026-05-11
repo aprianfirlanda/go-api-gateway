@@ -39,13 +39,16 @@ Configuration is loaded from environment variables:
 ```text
 GATEWAY_ADDR=:8080
 DATABASE_URL=postgres://user:pass@localhost:5432/app?sslmode=disable
-REDIS_ADDR=localhost:6379
 LOG_LEVEL=info
 HTTP_READ_TIMEOUT=5s
 HTTP_WRITE_TIMEOUT=30s
 HTTP_IDLE_TIMEOUT=60s
 REQUEST_BODY_LIMIT_BYTES=1048576
 ```
+
+`REDIS_ADDR` is reserved for later distributed runtime features such as replay
+protection, shared rate limiting, and quota counters. The current MVP code does
+not require Redis to run.
 
 ## Structure
 

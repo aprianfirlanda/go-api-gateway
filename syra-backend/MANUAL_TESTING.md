@@ -26,14 +26,22 @@ be running before `go test ./...`.
 ## Start Local Dependencies
 
 ```sh
-docker compose up -d postgres redis
+docker compose up -d postgres
 export DATABASE_URL='postgres://app:app@localhost:5432/app?sslmode=disable'
-export REDIS_ADDR='localhost:6379'
 export CONTROL_PLANE_ADMIN_TOKEN='dev-admin-token'
 ```
 
 The control plane can also run without `DATABASE_URL`; it will use the in-memory
 store. Use PostgreSQL for manual testing that should survive a process restart.
+
+Redis is included in `compose.yaml` for planned distributed features, but the
+current MVP code does not use it yet. Start it only when working on the later
+replay-protection, rate-limit, or quota-counter sprints:
+
+```sh
+docker compose up -d redis
+export REDIS_ADDR='localhost:6379'
+```
 
 ## Start Services
 

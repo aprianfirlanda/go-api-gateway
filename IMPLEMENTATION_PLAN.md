@@ -860,6 +860,193 @@ Sprint done criteria:
 - SOAP/XML route uses the same auth, policy, billing, and observability pipeline.
 - `go test ./...` passes.
 
+### Sprint 14: Control Plane to Gateway Config Sync
+
+Goal: make the locally running control plane and gateway work together for end-to-end manual demos.
+
+Scope:
+
+1. Add a PostgreSQL-backed runtime config loader for the gateway.
+2. Convert active tenants, API products, routes, upstreams, credentials, templates, policies, and adapter configs into runtime config snapshots.
+3. Wire gateway startup to load an initial snapshot from storage when `DATABASE_URL` is configured.
+4. Wire periodic reload to the PostgreSQL config source.
+5. Increment config version when admin-managed runtime resources change.
+6. Keep last-known-good behavior when database config is incomplete or invalid.
+7. Add integration tests that create config through repositories and execute a gateway request after reload.
+8. Update local run documentation with a real control plane to gateway flow.
+
+Sprint done criteria:
+
+- Admin-created active routes can be loaded by the gateway without hard-coded test config.
+- Published templates are required for routes that reference transformations.
+- Disabled routes, upstreams, credentials, and tenants are excluded or rejected.
+- Bad database config does not replace the current gateway snapshot.
+- `go test ./...` passes.
+
+### Sprint 15: Redis Runtime State Foundation
+
+Goal: introduce Redis as the shared runtime state store before features depend on it.
+
+Scope:
+
+1. Add `github.com/redis/go-redis/v9`.
+2. Add an internal Redis client package using `REDIS_ADDR` and timeout configuration.
+3. Add a small runtime state store interface for short-lived keys, counters, TTLs, and compare-and-set style operations where needed.
+4. Add Redis-backed implementation for the runtime state store.
+5. Add in-memory implementation for tests and single-process development.
+6. Wire Redis readiness checks when Redis-backed features are enabled.
+7. Add Redis connection metrics and structured logs.
+8. Add testcontainers-go Redis integration tests.
+9. Update local manual testing docs to explain when Redis is required.
+
+Sprint done criteria:
+
+- Redis-backed runtime state store can set, get, increment, expire, and delete tenant-scoped keys.
+- In-memory runtime state store can be used by unit tests without Redis.
+- Readiness reports Redis health only when Redis-backed runtime features are enabled.
+- Redis keys are namespaced by environment, tenant, feature, and version where applicable.
+- `go test ./...` passes.
+
+### Sprint 16: Runtime Authorization and Security Hardening
+
+Goal: enforce finance-grade runtime access rules beyond basic API key authentication.
+
+Scope:
+
+1. Enforce tenant status at runtime.
+2. Enforce consumer status at runtime.
+3. Enforce credential status, expiration, and scopes.
+4. Add API product or route scope requirements.
+5. Add optional HMAC request signature verification for selected routes.
+6. Add replay protection primitives using nonce, timestamp, and the Redis runtime state store.
+7. Add idempotency key handling for configured unsafe methods.
+8. Strengthen sensitive data masking for logs, audit events, usage events, and errors.
+9. Add tests for disabled tenants, disabled consumers, expired credentials, missing scopes, invalid signatures, replayed requests, and masking.
+
+Sprint done criteria:
+
+- Disabled tenant traffic is rejected.
+- Revoked, suspended, or expired credentials cannot call routes.
+- Missing required scopes return `403`.
+- HMAC-protected routes reject invalid or replayed requests.
+- Sensitive request and response payload values do not appear in logs, audit records, billing records, or error responses.
+- `go test ./...` passes.
+
+### Sprint 17: Billing Admin APIs and Usage Reporting
+
+Goal: make usage-based billing inspectable through admin APIs.
+
+Scope:
+
+1. Add billing plan CRUD APIs.
+2. Add usage event query APIs with tenant, route, consumer, status, and time filters.
+3. Add billing summary query APIs by tenant and billing period.
+4. Add billing summary generation endpoint or worker command.
+5. Add overage and billable unit breakdowns to billing summary responses.
+6. Add CSV or JSON export for usage summaries.
+7. Add pagination for usage event reads.
+8. Add audit events for billing plan and billing summary admin actions.
+9. Add tests for billing APIs, tenant isolation, pagination, overage calculation, and audit behavior.
+
+Sprint done criteria:
+
+- Admins can create and update billing plans.
+- Admins can query usage events without seeing sensitive payload data.
+- Billing summaries can be generated and read by period.
+- Overage calculation is visible in API responses.
+- Tenant-scoped usage queries cannot leak another tenant's events.
+- `go test ./...` passes.
+
+### Sprint 18: Admin Audit, RBAC, and Operator APIs
+
+Goal: make the control plane safer for multiple operators.
+
+Scope:
+
+1. Replace the single development admin token with an admin identity abstraction.
+2. Add platform admin and tenant admin roles.
+3. Add role checks for tenant-scoped and platform-scoped admin APIs.
+4. Add audit log read APIs with tenant, actor, action, resource, and time filters.
+5. Add immutable audit event storage behavior.
+6. Add admin API key or bootstrap admin credential support.
+7. Add tests for role authorization, audit log reads, and denied admin actions.
+
+Sprint done criteria:
+
+- Platform admins can manage all tenants.
+- Tenant admins can manage only their assigned tenant.
+- Denied admin actions do not mutate state.
+- Audit logs can be queried without exposing secrets.
+- Audit records cannot be updated or deleted through repositories.
+- `go test ./...` passes.
+
+### Sprint 19: Policy Persistence and Distributed Enforcement
+
+Goal: make policies durable and usable across multiple gateway instances.
+
+Scope:
+
+1. Add rate limit policy CRUD APIs.
+2. Add quota policy CRUD APIs.
+3. Persist policy assignments on routes or API products.
+4. Add Redis-backed rate limiter implementation using the runtime state store.
+5. Add Redis-backed quota counter implementation using the runtime state store.
+6. Add fixed-window or sliding-window behavior based on policy configuration.
+7. Add tests for policy persistence, distributed counters, route-level policies, API-product-level policies, and Redis fallback behavior.
+
+Sprint done criteria:
+
+- Admin-created policies are loaded into gateway runtime config.
+- Rate limit behavior is consistent across gateway instances using Redis.
+- Quota counters are tenant-scoped and period-aware.
+- Gateway behavior is explicit when Redis is unavailable.
+- `go test ./...` passes.
+
+### Sprint 20: Advanced Adapter Expansion
+
+Goal: add the next set of protocol proofs without weakening the adapter architecture.
+
+Scope:
+
+1. Add gRPC outbound proof adapter.
+2. Add GraphQL facade proof adapter.
+3. Add webhook outbound delivery proof.
+4. Add file-based ingestion or delivery proof.
+5. Keep all protocol-specific behavior behind adapter interfaces.
+6. Add route configuration validation for each new adapter type.
+7. Add integration tests that verify auth, policy, transformation, billing, and observability still run through the shared pipeline.
+
+Sprint done criteria:
+
+- At least two new adapter proofs work through the same gateway route execution model.
+- Adapter-specific configs are validated before publish or reload.
+- Failed adapter calls emit usage events and metrics.
+- No protocol-specific shortcut bypasses auth, policy, billing, or observability.
+- `go test ./...` passes.
+
+### Sprint 21: Production Readiness and Deployment
+
+Goal: prepare the MVP for realistic deployment and operations.
+
+Scope:
+
+1. Add Dockerfiles for gateway, control plane, and optional workers.
+2. Add production-oriented compose file for local multi-service testing.
+3. Add Kubernetes manifests or Helm chart skeleton.
+4. Add migration command or startup migration documentation.
+5. Add readiness checks for PostgreSQL, Redis, and config load status.
+6. Add graceful shutdown tests for in-flight requests.
+7. Add load test scripts for REST and REST to ISO8583 paths.
+8. Add runbooks for local development, manual testing, migrations, and troubleshooting.
+
+Sprint done criteria:
+
+- Services can be built into containers.
+- Local compose can run gateway, control plane, PostgreSQL, and Redis together.
+- Readiness accurately reports dependency and config status.
+- Operators have documented commands for migrations, startup, shutdown, and troubleshooting.
+- `go test ./...` passes.
+
 ## 21. Build Order Summary
 
 Recommended order:
@@ -879,6 +1066,14 @@ Recommended order:
 13. Config reload.
 14. Observability and audit.
 15. SOAP/XML proof adapter.
+16. Control plane to gateway config sync.
+17. Redis runtime state foundation.
+18. Runtime authorization and security hardening.
+19. Billing admin APIs and usage reporting.
+20. Admin audit, RBAC, and operator APIs.
+21. Policy persistence and distributed enforcement.
+22. Advanced adapter expansion.
+23. Production readiness and deployment.
 
 ## 22. Definition of MVP Complete
 
