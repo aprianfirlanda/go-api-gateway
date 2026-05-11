@@ -7,28 +7,32 @@ import (
 )
 
 type Config struct {
-	GatewayAddr      string
-	DatabaseURL      string
-	RedisAddr        string
-	LogLevel         string
-	ReadTimeout      time.Duration
-	WriteTimeout     time.Duration
-	IdleTimeout      time.Duration
-	ShutdownTimeout  time.Duration
-	RequestBodyLimit int64
+	GatewayAddr            string
+	ControlPlaneAddr       string
+	ControlPlaneAdminToken string
+	DatabaseURL            string
+	RedisAddr              string
+	LogLevel               string
+	ReadTimeout            time.Duration
+	WriteTimeout           time.Duration
+	IdleTimeout            time.Duration
+	ShutdownTimeout        time.Duration
+	RequestBodyLimit       int64
 }
 
 func Load() Config {
 	return Config{
-		GatewayAddr:      getenv("GATEWAY_ADDR", ":8080"),
-		DatabaseURL:      getenv("DATABASE_URL", ""),
-		RedisAddr:        getenv("REDIS_ADDR", "localhost:6379"),
-		LogLevel:         getenv("LOG_LEVEL", "info"),
-		ReadTimeout:      getenvDuration("HTTP_READ_TIMEOUT", 5*time.Second),
-		WriteTimeout:     getenvDuration("HTTP_WRITE_TIMEOUT", 30*time.Second),
-		IdleTimeout:      getenvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
-		ShutdownTimeout:  getenvDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
-		RequestBodyLimit: getenvInt64("REQUEST_BODY_LIMIT_BYTES", 1<<20),
+		GatewayAddr:            getenv("GATEWAY_ADDR", ":8080"),
+		ControlPlaneAddr:       getenv("CONTROL_PLANE_ADDR", ":8081"),
+		ControlPlaneAdminToken: getenv("CONTROL_PLANE_ADMIN_TOKEN", "dev-admin-token"),
+		DatabaseURL:            getenv("DATABASE_URL", ""),
+		RedisAddr:              getenv("REDIS_ADDR", "localhost:6379"),
+		LogLevel:               getenv("LOG_LEVEL", "info"),
+		ReadTimeout:            getenvDuration("HTTP_READ_TIMEOUT", 5*time.Second),
+		WriteTimeout:           getenvDuration("HTTP_WRITE_TIMEOUT", 30*time.Second),
+		IdleTimeout:            getenvDuration("HTTP_IDLE_TIMEOUT", 60*time.Second),
+		ShutdownTimeout:        getenvDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
+		RequestBodyLimit:       getenvInt64("REQUEST_BODY_LIMIT_BYTES", 1<<20),
 	}
 }
 
