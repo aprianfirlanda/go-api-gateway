@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"syra-backend/internal/billing"
 
 	"github.com/stretchr/testify/require"
 )
@@ -163,6 +166,75 @@ func TestTransformationTemplateAPI(t *testing.T) {
 	require.NoError(t, err)
 	requireAuditAction(t, auditEvents, "transformation_template.create")
 	requireAuditAction(t, auditEvents, "transformation_template.publish")
+}
+
+func TestBillingAdminAPIs(t *testing.T) {
+	store := NewStore()
+	usage := billing.NewInMemoryUsageEventStore()
+	router := NewRouter(RouterConfig{
+		AdminToken:  "test-token",
+		Store:       store,
+		UsageEvents: usage,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	plan := postJSON[billing.BillingPlan](t, router, "/admin/v1/billing-plans", `{
+		"name":"Enterprise","slug":"enterprise","monthlyFee":5000,"includedRequests":2,"overagePrice":0.25,"currency":"USD","status":"active"
+	}`)
+	require.NotEmpty(t, plan.ID)
+	updated := requestJSON[billing.BillingPlan](t, router, http.MethodPatch, "/admin/v1/billing-plans/"+plan.ID, `{"monthlyFee":6000}`, http.StatusOK)
+	require.Equal(t, 6000.0, updated.MonthlyFee)
+	tenantA := postJSON[Tenant](t, router, "/admin/v1/tenants", `{"name":"Bank A","slug":"bank-a","billingPlanId":"`+plan.ID+`"}`)
+	tenantB := postJSON[Tenant](t, router, "/admin/v1/tenants", `{"name":"Bank B","slug":"bank-b","billingPlanId":"`+plan.ID+`"}`)
+	now := time.Date(2026, 5, 11, 8, 0, 0, 0, time.UTC)
+	require.NoError(t, usage.Save(context.Background(), billing.UsageEvent{EventID: "evt_a1", TenantID: tenantA.ID, ConsumerID: "consumer_a", RouteID: "route_a", SourceProtocol: "rest", TargetProtocol: "rest", Status: billing.StatusSuccess, HTTPStatus: 200, Billable: true, OccurredAt: now}))
+	require.NoError(t, usage.Save(context.Background(), billing.UsageEvent{EventID: "evt_a2", TenantID: tenantA.ID, ConsumerID: "consumer_a", RouteID: "route_a", SourceProtocol: "rest", TargetProtocol: "rest", Status: billing.StatusFailed, HTTPStatus: 500, Billable: true, OccurredAt: now.Add(time.Minute)}))
+	require.NoError(t, usage.Save(context.Background(), billing.UsageEvent{EventID: "evt_b1", TenantID: tenantB.ID, ConsumerID: "consumer_b", RouteID: "route_b", SourceProtocol: "rest", TargetProtocol: "rest", Status: billing.StatusSuccess, HTTPStatus: 200, Billable: true, OccurredAt: now}))
+
+	rec := httptest.NewRecorder()
+	req := newAdminRequest(http.MethodGet, "/admin/v1/tenants/"+tenantA.ID+"/usage?limit=1", "")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var page1 listResponse[billing.UsageEvent]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page1))
+	require.Len(t, page1.Data, 1)
+	require.Equal(t, tenantA.ID, page1.Data[0].TenantID)
+	require.NotNil(t, page1.NextCursor)
+
+	rec = httptest.NewRecorder()
+	req = newAdminRequest(http.MethodGet, "/admin/v1/tenants/"+tenantA.ID+"/usage?limit=1&cursor="+url.QueryEscape(*page1.NextCursor), "")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var page2 listResponse[billing.UsageEvent]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page2))
+	require.Len(t, page2.Data, 1)
+	require.Equal(t, tenantA.ID, page2.Data[0].TenantID)
+
+	summary := requestJSON[billing.BillingSummary](t, router, http.MethodPost, "/admin/v1/tenants/"+tenantA.ID+"/billing-summaries/2026-05/recalculate", `{}`, http.StatusOK)
+	require.Equal(t, tenantA.ID, summary.TenantID)
+	require.Equal(t, int64(2), summary.TotalRequests)
+	require.Equal(t, int64(2), summary.BillableRequests)
+	require.Equal(t, int64(2), summary.IncludedRequests)
+	require.Equal(t, int64(0), summary.OverageRequests)
+
+	finalized := requestJSON[billing.BillingSummary](t, router, http.MethodPost, "/admin/v1/tenants/"+tenantA.ID+"/billing-summaries/2026-05/finalize", `{}`, http.StatusOK)
+	require.Equal(t, "finalized", finalized.Status)
+
+	rec = httptest.NewRecorder()
+	req = newAdminRequest(http.MethodGet, "/admin/v1/tenants/"+tenantA.ID+"/billing-summaries/2026-05/export?format=csv", "")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "tenant_id,billing_period")
+	require.Contains(t, rec.Body.String(), tenantA.ID)
+
+	audits, err := store.ListAuditEvents(context.Background())
+	require.NoError(t, err)
+	requireAuditAction(t, audits, "billing_plan.create")
+	requireAuditAction(t, audits, "billing_plan.update")
+	requireAuditAction(t, audits, "billing_summary.recalculate")
+	requireAuditAction(t, audits, "billing_summary.finalize")
+	requireAuditAction(t, audits, "billing_summary.export")
 }
 
 func newTestRouter() (http.Handler, *Store) {

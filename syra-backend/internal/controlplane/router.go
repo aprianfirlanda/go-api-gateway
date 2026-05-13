@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,21 +17,24 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/billing"
 	"syra-backend/pkg/ids"
 )
 
 const actorPlatformAdmin = "platform_admin"
 
 type RouterConfig struct {
-	AdminToken string
-	Store      Repository
-	Now        func() time.Time
+	AdminToken  string
+	Store       Repository
+	UsageEvents billing.UsageEventStore
+	Now         func() time.Time
 }
 
 type Handler struct {
-	store      Repository
-	adminToken string
-	now        func() time.Time
+	store       Repository
+	usageEvents billing.UsageEventStore
+	adminToken  string
+	now         func() time.Time
 }
 
 func NewRouter(cfg RouterConfig) http.Handler {
@@ -41,12 +47,15 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
-	h := &Handler{store: cfg.Store, adminToken: cfg.AdminToken, now: cfg.Now}
+	h := &Handler{store: cfg.Store, usageEvents: cfg.UsageEvents, adminToken: cfg.AdminToken, now: cfg.Now}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(h.adminAuth)
 	r.Route("/admin/v1", func(r chi.Router) {
+		r.Post("/billing-plans", h.createBillingPlan)
+		r.Get("/billing-plans", h.listBillingPlans)
+		r.Patch("/billing-plans/{billingPlanId}", h.updateBillingPlan)
 		r.Post("/tenants", h.createTenant)
 		r.Get("/tenants", h.listTenants)
 		r.Get("/tenants/{tenantId}", h.getTenant)
@@ -77,6 +86,12 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Post("/transformation-templates", h.createTemplate)
 			r.Get("/transformation-templates", h.listTemplates)
 			r.Post("/transformation-templates/{templateId}/publish", h.publishTemplate)
+
+			r.Get("/usage", h.listUsage)
+			r.Get("/billing-summaries/{billingPeriod}", h.getBillingSummary)
+			r.Post("/billing-summaries/{billingPeriod}/recalculate", h.recalculateBillingSummary)
+			r.Post("/billing-summaries/{billingPeriod}/finalize", h.finalizeBillingSummary)
+			r.Get("/billing-summaries/{billingPeriod}/export", h.exportBillingSummary)
 		})
 	})
 	return r
@@ -673,6 +688,247 @@ func (h *Handler) publishTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
+func (h *Handler) createBillingPlan(w http.ResponseWriter, r *http.Request) {
+	var req billing.BillingPlan
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Name == "" || req.Slug == "" || req.Currency == "" {
+		writeError(w, r, http.StatusBadRequest, "validation_error", "name, slug, and currency are required")
+		return
+	}
+	if req.Status == "" {
+		req.Status = billing.PlanStatusActive
+	}
+	req.ID = ids.New()
+	if err := h.store.CreateBillingPlan(r.Context(), req); err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	h.audit(r.Context(), "", "billing_plan.create", "billing_plan", req.ID)
+	writeJSON(w, http.StatusCreated, req)
+}
+
+func (h *Handler) listBillingPlans(w http.ResponseWriter, r *http.Request) {
+	items, err := h.store.ListBillingPlans(r.Context())
+	if err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, listResponse[billing.BillingPlan]{Data: items})
+}
+
+func (h *Handler) updateBillingPlan(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "billingPlanId")
+	plan, err := h.store.GetBillingPlan(r.Context(), id)
+	if err != nil {
+		writeStoreError(w, r, err)
+		return
+	}
+	var req struct {
+		Name             *string  `json:"name"`
+		Slug             *string  `json:"slug"`
+		MonthlyFee       *float64 `json:"monthlyFee"`
+		IncludedRequests *int64   `json:"includedRequests"`
+		OveragePrice     *float64 `json:"overagePrice"`
+		Currency         *string  `json:"currency"`
+		Status           *string  `json:"status"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Name != nil {
+		plan.Name = *req.Name
+	}
+	if req.Slug != nil {
+		plan.Slug = *req.Slug
+	}
+	if req.MonthlyFee != nil {
+		plan.MonthlyFee = *req.MonthlyFee
+	}
+	if req.IncludedRequests != nil {
+		plan.IncludedRequests = *req.IncludedRequests
+	}
+	if req.OveragePrice != nil {
+		plan.OveragePrice = *req.OveragePrice
+	}
+	if req.Currency != nil {
+		plan.Currency = *req.Currency
+	}
+	if req.Status != nil {
+		plan.Status = *req.Status
+	}
+	if err := h.store.UpdateBillingPlan(r.Context(), plan); err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	h.audit(r.Context(), "", "billing_plan.update", "billing_plan", plan.ID)
+	writeJSON(w, http.StatusOK, plan)
+}
+
+func (h *Handler) listUsage(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	if h.usageEvents == nil {
+		writeJSON(w, http.StatusOK, listResponse[billing.UsageEvent]{Data: []billing.UsageEvent{}})
+		return
+	}
+	filter := billing.UsageEventFilter{
+		TenantID:       tenantID,
+		RouteID:        r.URL.Query().Get("routeId"),
+		ConsumerID:     r.URL.Query().Get("consumerId"),
+		Status:         r.URL.Query().Get("status"),
+		SourceProtocol: r.URL.Query().Get("sourceProtocol"),
+		TargetProtocol: r.URL.Query().Get("targetProtocol"),
+	}
+	if billableRaw := r.URL.Query().Get("billable"); billableRaw != "" {
+		parsed := billableRaw == "true"
+		filter.Billable = &parsed
+	}
+	if fromRaw := r.URL.Query().Get("from"); fromRaw != "" {
+		from, err := time.Parse(time.RFC3339, fromRaw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_error", "invalid from")
+			return
+		}
+		filter.From = &from
+	}
+	if toRaw := r.URL.Query().Get("to"); toRaw != "" {
+		to, err := time.Parse(time.RFC3339, toRaw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_error", "invalid to")
+			return
+		}
+		filter.To = &to
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, r, http.StatusBadRequest, "validation_error", "invalid limit")
+			return
+		}
+		limit = parsed
+	}
+	page, err := h.usageEvents.ListPage(r.Context(), filter, limit, r.URL.Query().Get("cursor"))
+	if err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, listResponse[billing.UsageEvent]{Data: page.Data, NextCursor: page.NextCursor})
+}
+
+func (h *Handler) getBillingSummary(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	period := chi.URLParam(r, "billingPeriod")
+	summary, err := h.store.GetBillingSummary(r.Context(), tenantID, period)
+	if err != nil {
+		writeStoreError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+func (h *Handler) recalculateBillingSummary(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	period := chi.URLParam(r, "billingPeriod")
+	if h.usageEvents == nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "usage events store unavailable")
+		return
+	}
+	tenant, err := h.store.GetTenant(r.Context(), tenantID)
+	if err != nil {
+		writeStoreError(w, r, err)
+		return
+	}
+	plan, err := h.store.GetBillingPlan(r.Context(), tenant.BillingPlanID)
+	if err != nil {
+		writeStoreError(w, r, err)
+		return
+	}
+	periodStart, periodEnd, err := parseBillingPeriod(period)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+	agg := billing.NewAggregator(h.usageEvents)
+	summary, err := agg.Summarize(r.Context(), tenantID, plan, periodStart, periodEnd)
+	if err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	summary.BillingPeriod = period
+	summary.Status = "draft"
+	summary.CalculatedAt = h.now()
+	if err := h.store.UpsertBillingSummary(r.Context(), summary); err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	h.audit(r.Context(), tenantID, "billing_summary.recalculate", "billing_summary", period)
+	writeJSON(w, http.StatusOK, summary)
+}
+
+func (h *Handler) finalizeBillingSummary(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	period := chi.URLParam(r, "billingPeriod")
+	summary, err := h.store.GetBillingSummary(r.Context(), tenantID, period)
+	if err != nil {
+		writeStoreError(w, r, err)
+		return
+	}
+	summary.Status = "finalized"
+	summary.CalculatedAt = h.now()
+	if err := h.store.UpsertBillingSummary(r.Context(), summary); err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	h.audit(r.Context(), tenantID, "billing_summary.finalize", "billing_summary", period)
+	writeJSON(w, http.StatusOK, summary)
+}
+
+func (h *Handler) exportBillingSummary(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	period := chi.URLParam(r, "billingPeriod")
+	format := strings.ToLower(r.URL.Query().Get("format"))
+	if format == "" {
+		format = "json"
+	}
+	summary, err := h.store.GetBillingSummary(r.Context(), tenantID, period)
+	if err != nil {
+		writeStoreError(w, r, err)
+		return
+	}
+	switch format {
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv")
+		writer := csv.NewWriter(w)
+		_ = writer.Write([]string{"tenant_id", "billing_period", "billing_plan", "request_count", "failure_count", "rejected_count", "timeout_count", "billable_count", "included_quota", "billable_overage", "monthly_fee", "overage_amount", "estimated_amount", "currency", "status", "calculated_at"})
+		_ = writer.Write([]string{
+			summary.TenantID, summary.BillingPeriod, summary.PlanID,
+			strconv.FormatInt(summary.TotalRequests, 10),
+			strconv.FormatInt(summary.FailedRequests, 10),
+			strconv.FormatInt(summary.RejectedRequests, 10),
+			strconv.FormatInt(summary.TimeoutRequests, 10),
+			strconv.FormatInt(summary.BillableRequests, 10),
+			strconv.FormatInt(summary.IncludedRequests, 10),
+			strconv.FormatInt(summary.OverageRequests, 10),
+			fmt.Sprintf("%.4f", summary.MonthlyFee),
+			fmt.Sprintf("%.4f", summary.OverageAmount),
+			fmt.Sprintf("%.4f", summary.EstimatedAmount),
+			summary.Currency, summary.Status, summary.CalculatedAt.Format(time.RFC3339),
+		})
+		writer.Flush()
+	case "json":
+		writeJSON(w, http.StatusOK, map[string]any{
+			"summary":     summary,
+			"generatedAt": h.now(),
+		})
+	default:
+		writeError(w, r, http.StatusBadRequest, "validation_error", "unsupported format")
+		return
+	}
+	h.audit(r.Context(), tenantID, "billing_summary.export", "billing_summary", period)
+}
+
 func (h *Handler) audit(ctx context.Context, tenantID string, action string, resource string, resourceID string) {
 	event := AuditEvent{ID: ids.New(), ActorID: actorFromContext(ctx), TenantID: tenantID, Action: action, Resource: resource, ResourceID: resourceID, OccurredAt: h.now()}
 	_ = h.store.AppendAudit(context.WithoutCancel(ctx), event)
@@ -690,6 +946,15 @@ func newAPIKeyParts() (string, string, error) {
 	prefix := "gw_live_" + base64.RawURLEncoding.EncodeToString(prefixBytes)
 	secret := base64.RawURLEncoding.EncodeToString(secretBytes)
 	return prefix, secret, nil
+}
+
+func parseBillingPeriod(period string) (time.Time, time.Time, error) {
+	start, err := time.Parse("2006-01", period)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid billing period")
+	}
+	end := start.AddDate(0, 1, 0)
+	return start.UTC(), end.UTC(), nil
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {

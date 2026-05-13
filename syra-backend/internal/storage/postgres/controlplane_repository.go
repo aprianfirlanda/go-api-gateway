@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/billing"
 	"syra-backend/internal/controlplane"
 	"syra-backend/pkg/ids"
 )
@@ -47,6 +48,106 @@ func (r *ControlPlaneRepository) WithTx(ctx context.Context, fn func(*ControlPla
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (r *ControlPlaneRepository) CreateBillingPlan(ctx context.Context, plan billing.BillingPlan) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO billing_plans (
+			id, name, slug, monthly_fee, included_requests, overage_price, currency, status, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+	`, plan.ID, plan.Name, plan.Slug, plan.MonthlyFee, plan.IncludedRequests, plan.OveragePrice, plan.Currency, plan.Status, time.Now().UTC(), time.Now().UTC())
+	return err
+}
+
+func (r *ControlPlaneRepository) ListBillingPlans(ctx context.Context) ([]billing.BillingPlan, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id::text, name, slug, monthly_fee, included_requests, overage_price, currency, status
+		FROM billing_plans
+		WHERE deleted_at IS NULL
+		ORDER BY created_at, id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var plans []billing.BillingPlan
+	for rows.Next() {
+		var p billing.BillingPlan
+		if err := rows.Scan(&p.ID, &p.Name, &p.Slug, &p.MonthlyFee, &p.IncludedRequests, &p.OveragePrice, &p.Currency, &p.Status); err != nil {
+			return nil, err
+		}
+		plans = append(plans, p)
+	}
+	return plans, rows.Err()
+}
+
+func (r *ControlPlaneRepository) GetBillingPlan(ctx context.Context, id string) (billing.BillingPlan, error) {
+	var p billing.BillingPlan
+	err := r.db.QueryRow(ctx, `
+		SELECT id::text, name, slug, monthly_fee, included_requests, overage_price, currency, status
+		FROM billing_plans
+		WHERE id = $1 AND deleted_at IS NULL
+	`, id).Scan(&p.ID, &p.Name, &p.Slug, &p.MonthlyFee, &p.IncludedRequests, &p.OveragePrice, &p.Currency, &p.Status)
+	if err != nil {
+		return billing.BillingPlan{}, mapNotFound(err)
+	}
+	return p, nil
+}
+
+func (r *ControlPlaneRepository) UpdateBillingPlan(ctx context.Context, plan billing.BillingPlan) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE billing_plans
+		SET name = $2, slug = $3, monthly_fee = $4, included_requests = $5, overage_price = $6, currency = $7, status = $8, updated_at = $9
+		WHERE id = $1 AND deleted_at IS NULL
+	`, plan.ID, plan.Name, plan.Slug, plan.MonthlyFee, plan.IncludedRequests, plan.OveragePrice, plan.Currency, plan.Status, time.Now().UTC())
+	return rowsAffected(tag, err)
+}
+
+func (r *ControlPlaneRepository) UpsertBillingSummary(ctx context.Context, summary billing.BillingSummary) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO billing_summaries (
+			id, tenant_id, billing_period, billing_plan_id, request_count, success_count, failure_count,
+			rejected_count, timeout_count, billable_count, included_quota, billable_overage, monthly_fee,
+			overage_amount, estimated_amount, currency, status, calculated_at, created_at, updated_at
+		) VALUES (
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
+		)
+		ON CONFLICT (tenant_id, billing_period) DO UPDATE SET
+			billing_plan_id = EXCLUDED.billing_plan_id,
+			request_count = EXCLUDED.request_count,
+			success_count = EXCLUDED.success_count,
+			failure_count = EXCLUDED.failure_count,
+			rejected_count = EXCLUDED.rejected_count,
+			timeout_count = EXCLUDED.timeout_count,
+			billable_count = EXCLUDED.billable_count,
+			included_quota = EXCLUDED.included_quota,
+			billable_overage = EXCLUDED.billable_overage,
+			monthly_fee = EXCLUDED.monthly_fee,
+			overage_amount = EXCLUDED.overage_amount,
+			estimated_amount = EXCLUDED.estimated_amount,
+			currency = EXCLUDED.currency,
+			status = EXCLUDED.status,
+			calculated_at = EXCLUDED.calculated_at,
+			updated_at = EXCLUDED.updated_at
+	`, ids.New(), summary.TenantID, summary.BillingPeriod, nullableString(summary.PlanID), summary.TotalRequests, summary.TotalRequests-summary.FailedRequests-summary.RejectedRequests-summary.TimeoutRequests, summary.FailedRequests, summary.RejectedRequests, summary.TimeoutRequests, summary.BillableRequests, summary.IncludedRequests, summary.OverageRequests, summary.MonthlyFee, summary.OverageAmount, summary.EstimatedAmount, summary.Currency, summary.Status, summary.CalculatedAt, time.Now().UTC(), time.Now().UTC())
+	return err
+}
+
+func (r *ControlPlaneRepository) GetBillingSummary(ctx context.Context, tenantID, billingPeriod string) (billing.BillingSummary, error) {
+	var s billing.BillingSummary
+	err := r.db.QueryRow(ctx, `
+		SELECT tenant_id::text, billing_period, COALESCE(billing_plan_id::text,''), request_count, failure_count, rejected_count, timeout_count,
+			billable_count, included_quota, billable_overage, monthly_fee, overage_amount, estimated_amount, currency, status, calculated_at
+		FROM billing_summaries
+		WHERE tenant_id = $1 AND billing_period = $2
+	`, tenantID, billingPeriod).Scan(
+		&s.TenantID, &s.BillingPeriod, &s.PlanID, &s.TotalRequests, &s.FailedRequests, &s.RejectedRequests, &s.TimeoutRequests,
+		&s.BillableRequests, &s.IncludedRequests, &s.OverageRequests, &s.MonthlyFee, &s.OverageAmount, &s.EstimatedAmount, &s.Currency, &s.Status, &s.CalculatedAt,
+	)
+	if err != nil {
+		return billing.BillingSummary{}, mapNotFound(err)
+	}
+	return s, nil
 }
 
 func (r *ControlPlaneRepository) CreateTenant(ctx context.Context, tenant controlplane.Tenant) error {

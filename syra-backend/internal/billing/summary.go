@@ -25,12 +25,16 @@ func (a *Aggregator) Summarize(ctx context.Context, tenantID string, plan Billin
 	}
 
 	summary := BillingSummary{
-		TenantID:    tenantID,
-		PlanID:      plan.ID,
-		PeriodStart: periodStart,
-		PeriodEnd:   periodEnd,
-		MonthlyFee:  plan.MonthlyFee,
-		Currency:    plan.Currency,
+		TenantID:         tenantID,
+		PlanID:           plan.ID,
+		BillingPeriod:    periodStart.Format("2006-01"),
+		PeriodStart:      periodStart,
+		PeriodEnd:        periodEnd,
+		MonthlyFee:       plan.MonthlyFee,
+		Currency:         plan.Currency,
+		IncludedRequests: plan.IncludedRequests,
+		Status:           "draft",
+		CalculatedAt:     time.Now().UTC(),
 	}
 
 	for _, event := range events {

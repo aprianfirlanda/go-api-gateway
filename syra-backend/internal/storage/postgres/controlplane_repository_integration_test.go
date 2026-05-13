@@ -30,6 +30,21 @@ func TestControlPlaneRepositoryIntegration(t *testing.T) {
 	require.NoError(t, repo.CreateTenant(ctx, tenantA))
 	require.NoError(t, repo.CreateTenant(ctx, tenantB))
 
+	plan := billing.BillingPlan{
+		ID:               ids.New(),
+		Name:             "Enterprise",
+		Slug:             "enterprise",
+		MonthlyFee:       5000,
+		IncludedRequests: 100,
+		OveragePrice:     0.1,
+		Currency:         "USD",
+		Status:           billing.PlanStatusActive,
+	}
+	require.NoError(t, repo.CreateBillingPlan(ctx, plan))
+	loadedPlan, err := repo.GetBillingPlan(ctx, plan.ID)
+	require.NoError(t, err)
+	require.Equal(t, plan.Slug, loadedPlan.Slug)
+
 	product := controlplane.APIProduct{ID: ids.New(), TenantID: tenantA.ID, Name: "Card Authorization", Slug: "card-authorization", Status: controlplane.StatusActive, CreatedAt: now, UpdatedAt: now}
 	require.NoError(t, repo.CreateAPIProduct(ctx, product))
 	otherProduct := controlplane.APIProduct{ID: ids.New(), TenantID: tenantB.ID, Name: "Accounts", Slug: "accounts", Status: controlplane.StatusActive, CreatedAt: now, UpdatedAt: now}
@@ -144,6 +159,34 @@ func TestPostgresUsageEventStoreIntegration(t *testing.T) {
 	require.Equal(t, event.EventID, events[0].EventID)
 	require.Equal(t, event.RouteID, events[0].RouteID)
 	require.True(t, events[0].Billable)
+
+	page, err := usageStore.ListPage(ctx, billing.UsageEventFilter{TenantID: tenant.ID}, 1, "")
+	require.NoError(t, err)
+	require.Len(t, page.Data, 1)
+	require.Equal(t, event.EventID, page.Data[0].EventID)
+
+	summary := billing.BillingSummary{
+		TenantID:         tenant.ID,
+		BillingPeriod:    "2026-05",
+		PlanID:           "",
+		TotalRequests:    1,
+		BillableRequests: 1,
+		IncludedRequests: 0,
+		OverageRequests:  1,
+		FailedRequests:   0,
+		RejectedRequests: 0,
+		TimeoutRequests:  0,
+		MonthlyFee:       0,
+		OverageAmount:    0.1,
+		EstimatedAmount:  0.1,
+		Currency:         "USD",
+		Status:           "draft",
+		CalculatedAt:     now,
+	}
+	require.NoError(t, repo.UpsertBillingSummary(ctx, summary))
+	loadedSummary, err := repo.GetBillingSummary(ctx, tenant.ID, "2026-05")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), loadedSummary.TotalRequests)
 }
 
 func newTestPostgresPool(t *testing.T, ctx context.Context) *pgxpool.Pool {

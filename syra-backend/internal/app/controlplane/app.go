@@ -8,25 +8,28 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"syra-backend/internal/billing"
 	"syra-backend/internal/config"
 	cp "syra-backend/internal/controlplane"
 	"syra-backend/internal/storage/postgres"
 )
 
 type App struct {
-	Server *http.Server
-	Store  cp.Repository
-	pool   *pgxpool.Pool
+	Server      *http.Server
+	Store       cp.Repository
+	UsageEvents billing.UsageEventStore
+	pool        *pgxpool.Pool
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
-	store, pool, err := openRepository(context.Background(), cfg)
+	store, usageEvents, pool, err := openRepository(context.Background(), cfg)
 	if err != nil {
 		return nil, err
 	}
 	router := cp.NewRouter(cp.RouterConfig{
-		AdminToken: cfg.ControlPlaneAdminToken,
-		Store:      store,
+		AdminToken:  cfg.ControlPlaneAdminToken,
+		Store:       store,
+		UsageEvents: usageEvents,
 	})
 
 	return &App{
@@ -37,8 +40,9 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			WriteTimeout: cfg.WriteTimeout,
 			IdleTimeout:  cfg.IdleTimeout,
 		},
-		Store: store,
-		pool:  pool,
+		Store:       store,
+		UsageEvents: usageEvents,
+		pool:        pool,
 	}, nil
 }
 
@@ -48,16 +52,16 @@ func (a *App) Close() {
 	}
 }
 
-func openRepository(ctx context.Context, cfg config.Config) (cp.Repository, *pgxpool.Pool, error) {
+func openRepository(ctx context.Context, cfg config.Config) (cp.Repository, billing.UsageEventStore, *pgxpool.Pool, error) {
 	if cfg.DatabaseURL == "" {
-		return cp.NewStore(), nil, nil
+		return cp.NewStore(), billing.NewInMemoryUsageEventStore(), nil, nil
 	}
 	if err := postgres.Migrate(ctx, cfg.DatabaseURL, "migrations"); err != nil {
-		return nil, nil, fmt.Errorf("migrate control plane database: %w", err)
+		return nil, nil, nil, fmt.Errorf("migrate control plane database: %w", err)
 	}
 	pool, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return postgres.NewControlPlaneRepository(pool), pool, nil
+	return postgres.NewControlPlaneRepository(pool), postgres.NewUsageEventStore(pool), pool, nil
 }

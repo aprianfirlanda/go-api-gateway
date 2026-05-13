@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"syra-backend/internal/billing"
 )
 
 var ErrNotFound = errors.New("resource not found")
@@ -17,6 +19,8 @@ type Store struct {
 	consumers   map[string]Consumer
 	credentials map[string]Credential
 	templates   map[string]TransformationTemplate
+	plans       map[string]billing.BillingPlan
+	summaries   map[string]billing.BillingSummary
 	auditEvents []AuditEvent
 }
 
@@ -29,7 +33,42 @@ func NewStore() *Store {
 		consumers:   map[string]Consumer{},
 		credentials: map[string]Credential{},
 		templates:   map[string]TransformationTemplate{},
+		plans:       map[string]billing.BillingPlan{},
+		summaries:   map[string]billing.BillingSummary{},
 	}
+}
+
+func (s *Store) CreateBillingPlan(ctx context.Context, plan billing.BillingPlan) error {
+	return put(ctx, s, s.plans, plan.ID, plan)
+}
+
+func (s *Store) ListBillingPlans(ctx context.Context) ([]billing.BillingPlan, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]billing.BillingPlan, 0, len(s.plans))
+	for _, item := range s.plans {
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (s *Store) GetBillingPlan(ctx context.Context, id string) (billing.BillingPlan, error) {
+	return get(ctx, s, s.plans, id)
+}
+
+func (s *Store) UpdateBillingPlan(ctx context.Context, plan billing.BillingPlan) error {
+	return s.CreateBillingPlan(ctx, plan)
+}
+
+func (s *Store) UpsertBillingSummary(ctx context.Context, summary billing.BillingSummary) error {
+	return put(ctx, s, s.summaries, tenantKey(summary.TenantID, summary.BillingPeriod), summary)
+}
+
+func (s *Store) GetBillingSummary(ctx context.Context, tenantID, billingPeriod string) (billing.BillingSummary, error) {
+	return get(ctx, s, s.summaries, tenantKey(tenantID, billingPeriod))
 }
 
 func (s *Store) CreateTenant(ctx context.Context, tenant Tenant) error {

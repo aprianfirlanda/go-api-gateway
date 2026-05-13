@@ -28,6 +28,11 @@ type UsageEvent struct {
 	OccurredAt     time.Time
 }
 
+type UsageEventPage struct {
+	Data       []UsageEvent
+	NextCursor *string
+}
+
 type BillingPlan struct {
 	ID               string
 	Name             string
@@ -41,11 +46,13 @@ type BillingPlan struct {
 
 type BillingSummary struct {
 	TenantID         string
+	BillingPeriod    string
 	PlanID           string
 	PeriodStart      time.Time
 	PeriodEnd        time.Time
 	TotalRequests    int64
 	BillableRequests int64
+	IncludedRequests int64
 	RejectedRequests int64
 	FailedRequests   int64
 	TimeoutRequests  int64
@@ -54,6 +61,8 @@ type BillingSummary struct {
 	OverageAmount    float64
 	EstimatedAmount  float64
 	Currency         string
+	Status           string
+	CalculatedAt     time.Time
 }
 
 func BillableForStatus(status string, upstreamCalled bool) bool {

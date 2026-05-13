@@ -1,8 +1,17 @@
 package controlplane
 
 import "context"
+import "syra-backend/internal/billing"
 
 type Repository interface {
+	CreateBillingPlan(ctx context.Context, plan billing.BillingPlan) error
+	ListBillingPlans(ctx context.Context) ([]billing.BillingPlan, error)
+	GetBillingPlan(ctx context.Context, id string) (billing.BillingPlan, error)
+	UpdateBillingPlan(ctx context.Context, plan billing.BillingPlan) error
+
+	UpsertBillingSummary(ctx context.Context, summary billing.BillingSummary) error
+	GetBillingSummary(ctx context.Context, tenantID, billingPeriod string) (billing.BillingSummary, error)
+
 	CreateTenant(ctx context.Context, tenant Tenant) error
 	ListTenants(ctx context.Context) ([]Tenant, error)
 	GetTenant(ctx context.Context, tenantID string) (Tenant, error)
