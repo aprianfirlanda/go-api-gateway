@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -12,6 +13,7 @@ import (
 
 	"syra-backend/internal/auth"
 	"syra-backend/internal/controlplane"
+	"syra-backend/pkg/ids"
 )
 
 type queryer interface {
@@ -24,6 +26,8 @@ type ControlPlaneRepository struct {
 	pool *pgxpool.Pool
 	db   queryer
 }
+
+const runtimeConfigScope = "gateway_runtime"
 
 func NewControlPlaneRepository(pool *pgxpool.Pool) *ControlPlaneRepository {
 	return &ControlPlaneRepository{pool: pool, db: pool}
@@ -51,7 +55,10 @@ func (r *ControlPlaneRepository) CreateTenant(ctx context.Context, tenant contro
 		INSERT INTO tenants (id, name, slug, status, billing_plan_id, metadata, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, tenant.ID, tenant.Name, tenant.Slug, tenant.Status, nullableString(tenant.BillingPlanID), metadata, tenant.CreatedAt, tenant.UpdatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) ListTenants(ctx context.Context) ([]controlplane.Tenant, error) {
@@ -81,7 +88,10 @@ func (r *ControlPlaneRepository) UpdateTenant(ctx context.Context, tenant contro
 		SET name = $2, slug = $3, status = $4, billing_plan_id = $5, metadata = $6, updated_at = $7
 		WHERE id = $1
 	`, tenant.ID, tenant.Name, tenant.Slug, tenant.Status, nullableString(tenant.BillingPlanID), jsonOrEmptyObject(tenant.Metadata), tenant.UpdatedAt)
-	return rowsAffected(tag, err)
+	if err := rowsAffected(tag, err); err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) CreateAPIProduct(ctx context.Context, product controlplane.APIProduct) error {
@@ -89,7 +99,10 @@ func (r *ControlPlaneRepository) CreateAPIProduct(ctx context.Context, product c
 		INSERT INTO api_products (id, tenant_id, name, slug, description, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, product.ID, product.TenantID, product.Name, product.Slug, nullableString(product.Description), product.Status, product.CreatedAt, product.UpdatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) ListAPIProducts(ctx context.Context, tenantID string) ([]controlplane.APIProduct, error) {
@@ -120,7 +133,10 @@ func (r *ControlPlaneRepository) UpdateAPIProduct(ctx context.Context, product c
 		SET name = $3, slug = $4, description = $5, status = $6, updated_at = $7
 		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 	`, product.TenantID, product.ID, product.Name, product.Slug, nullableString(product.Description), product.Status, product.UpdatedAt)
-	return rowsAffected(tag, err)
+	if err := rowsAffected(tag, err); err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) CreateUpstream(ctx context.Context, upstream controlplane.Upstream) error {
@@ -128,7 +144,10 @@ func (r *ControlPlaneRepository) CreateUpstream(ctx context.Context, upstream co
 		INSERT INTO upstreams (id, tenant_id, name, protocol, config, secret_ref, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`, upstream.ID, upstream.TenantID, upstream.Name, upstream.Protocol, jsonOrEmptyRaw(upstream.Config), upstream.SecretRef, upstream.Status, upstream.CreatedAt, upstream.UpdatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) ListUpstreams(ctx context.Context, tenantID string) ([]controlplane.Upstream, error) {
@@ -159,7 +178,10 @@ func (r *ControlPlaneRepository) UpdateUpstream(ctx context.Context, upstream co
 		SET name = $3, protocol = $4, config = $5, secret_ref = $6, status = $7, updated_at = $8
 		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 	`, upstream.TenantID, upstream.ID, upstream.Name, upstream.Protocol, jsonOrEmptyRaw(upstream.Config), upstream.SecretRef, upstream.Status, upstream.UpdatedAt)
-	return rowsAffected(tag, err)
+	if err := rowsAffected(tag, err); err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) CreateRoute(ctx context.Context, route controlplane.Route) error {
@@ -171,7 +193,10 @@ func (r *ControlPlaneRepository) CreateRoute(ctx context.Context, route controlp
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 	`, route.ID, route.TenantID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, route.Status, route.CreatedAt, route.UpdatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) ListRoutes(ctx context.Context, tenantID string) ([]controlplane.Route, error) {
@@ -200,7 +225,10 @@ func (r *ControlPlaneRepository) UpdateRoute(ctx context.Context, route controlp
 			quota_policy_id = $13, priority = $14, timeout_ms = $15, status = $16, updated_at = $17
 		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 	`, route.TenantID, route.ID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, route.Status, route.UpdatedAt)
-	return rowsAffected(tag, err)
+	if err := rowsAffected(tag, err); err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) CreateConsumer(ctx context.Context, consumer controlplane.Consumer) error {
@@ -224,7 +252,10 @@ func (r *ControlPlaneRepository) CreateCredential(ctx context.Context, credentia
 		INSERT INTO credentials (id, tenant_id, consumer_id, type, key_prefix, secret_hash, scopes, status, expires_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, credential.ID, credential.TenantID, credential.ConsumerID, credential.Type, nullableString(credential.KeyPrefix), nullableString(credential.SecretHash), credential.Scopes, credential.Status, credential.ExpiresAt, credential.CreatedAt, credential.UpdatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) GetCredential(ctx context.Context, tenantID, id string) (controlplane.Credential, error) {
@@ -241,7 +272,10 @@ func (r *ControlPlaneRepository) UpdateCredential(ctx context.Context, credentia
 		SET key_prefix = $3, secret_hash = $4, scopes = $5, status = $6, expires_at = $7, updated_at = $8
 		WHERE tenant_id = $1 AND id = $2
 	`, credential.TenantID, credential.ID, nullableString(credential.KeyPrefix), nullableString(credential.SecretHash), credential.Scopes, credential.Status, credential.ExpiresAt, credential.UpdatedAt)
-	return rowsAffected(tag, err)
+	if err := rowsAffected(tag, err); err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) FindByPrefix(ctx context.Context, prefix string) (auth.APIKeyCredential, error) {
@@ -268,7 +302,10 @@ func (r *ControlPlaneRepository) CreateTemplate(ctx context.Context, template co
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, template.ID, template.TenantID, nullableString(template.APIProductID), template.Name, template.SourceProtocol, template.TargetProtocol, template.Version, jsonOrEmptyRaw(template.TemplateBody), template.Status, template.PublishedAt, template.CreatedAt, template.UpdatedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) ListTemplates(ctx context.Context, tenantID string) ([]controlplane.TransformationTemplate, error) {
@@ -296,7 +333,10 @@ func (r *ControlPlaneRepository) UpdateTemplate(ctx context.Context, template co
 			template_body = $8, status = $9, published_at = $10, updated_at = $11
 		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 	`, template.TenantID, template.ID, nullableString(template.APIProductID), template.Name, template.SourceProtocol, template.TargetProtocol, template.Version, jsonOrEmptyRaw(template.TemplateBody), template.Status, template.PublishedAt, template.UpdatedAt)
-	return rowsAffected(tag, err)
+	if err := rowsAffected(tag, err); err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
 }
 
 func (r *ControlPlaneRepository) AppendAudit(ctx context.Context, event controlplane.AuditEvent) error {
@@ -426,6 +466,23 @@ func collectRows[T any](rows pgx.Rows, scan func(rowScanner) (T, error)) ([]T, e
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *ControlPlaneRepository) bumpRuntimeConfigVersion(ctx context.Context) error {
+	var nextVersion int64
+	if err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(MAX(version), 0) + 1
+		FROM config_versions
+		WHERE tenant_id IS NULL AND scope = $1
+	`, runtimeConfigScope).Scan(&nextVersion); err != nil {
+		return err
+	}
+	checksum := fmt.Sprintf("gateway-runtime-v%d", nextVersion)
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO config_versions (id, tenant_id, scope, version, checksum, status, published_at, created_at)
+		VALUES ($1, NULL, $2, $3, $4, 'active', $5, $5)
+	`, ids.New(), runtimeConfigScope, nextVersion, checksum, time.Now().UTC())
+	return err
 }
 
 func rowsAffected(tag pgconn.CommandTag, err error) error {

@@ -56,6 +56,7 @@ Terminal 2:
 
 ```sh
 cd syra-backend
+export CONFIG_RELOAD_INTERVAL=3s
 go run ./cmd/gateway
 ```
 
@@ -194,17 +195,39 @@ archived templates are rejected by the gateway runtime.
 
 ## Runtime Gateway Feature Checks
 
-The current MVP has separate control plane storage and gateway runtime config.
-Control plane resources are persisted and audited, but they are not yet synced
-into the running gateway process as live route config. For full data-plane
-behavior, run the focused automated tests:
+Start a simple upstream to receive gateway traffic:
+
+```sh
+python3 -m http.server 9000
+```
+
+Then call the gateway with the API key returned from credential creation:
+
+```sh
+curl -i "http://localhost:8080/payments" \
+  -H 'Host: api.local.test' \
+  -H "Authorization: ApiKey $API_KEY"
+```
+
+The gateway loads runtime config from PostgreSQL on startup and reloads it
+periodically based on `CONFIG_RELOAD_INTERVAL`. Create and publish routes in the
+control plane, then wait for one reload interval and call the gateway again.
+
+Important runtime sync checks:
+
+- Active routes are loaded without hard-coded gateway config.
+- Routes that reference transformations require published templates.
+- Disabled routes, upstreams, credentials, and tenants are excluded or rejected.
+- Invalid database state does not replace the last known good gateway snapshot.
+
+For focused automated verification, run:
 
 ```sh
 go test ./internal/httpserver -run 'Gateway|Billing|SOAP|ISO|Transformation|Policy'
 go test ./internal/gateway/listener/iso8583 -run TestISO8583InboundFlow
 go test ./internal/protocol/soapxml -run Test
 go test ./internal/billing -run Test
-go test ./internal/configreload -run Test
+go test ./internal/storage/postgres -run RuntimeConfigSync -v
 ```
 
 These tests cover:
@@ -218,7 +241,7 @@ These tests cover:
 - Billing events for success, rejected, failed, and timeout attempts
 - Billing summary and overage calculation
 - Rate-limit, quota, IP allowlist, and request-size policy behavior
-- Config reload validation and last-known-good fallback
+- PostgreSQL runtime config reload validation and last-known-good fallback
 - Prometheus metrics and trace hooks
 
 ## PostgreSQL Repository Checks

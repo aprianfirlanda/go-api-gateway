@@ -32,6 +32,12 @@ GET /healthz
 GET /readyz
 ```
 
+Control plane:
+
+```sh
+go run ./cmd/control-plane
+```
+
 ## Configuration
 
 Configuration is loaded from environment variables:
@@ -49,6 +55,9 @@ REQUEST_BODY_LIMIT_BYTES=1048576
 `REDIS_ADDR` is reserved for later distributed runtime features such as replay
 protection, shared rate limiting, and quota counters. The current MVP code does
 not require Redis to run.
+
+When `DATABASE_URL` is set, the gateway loads runtime config from PostgreSQL at
+startup and reloads it on the `CONFIG_RELOAD_INTERVAL` schedule.
 
 ## Structure
 

@@ -2,8 +2,11 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"syra-backend/internal/auth"
 	"syra-backend/internal/billing"
@@ -19,12 +22,14 @@ import (
 	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
 	"syra-backend/internal/protocol/soapxml"
+	"syra-backend/internal/storage/postgres"
 	"syra-backend/internal/transform"
 )
 
 type App struct {
 	Server       *http.Server
 	ConfigReload *runtimeconfig.Manager
+	pool         *pgxpool.Pool
 }
 
 func New(cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -52,9 +57,22 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	templateStore := transform.NewInMemoryStore()
 	usageEvents := billing.NewInMemoryUsageEventStore()
 	metrics := observability.NewMetrics()
-	reloadManager := runtimeconfig.NewManager(runtimeconfig.StaticSource{
+	source := runtimeconfig.SnapshotSource(runtimeconfig.StaticSource{
 		Snapshot: runtimeconfig.Snapshot{Version: 1, Status: "active"},
-	}, runtimeconfig.Applier{
+	})
+	var pool *pgxpool.Pool
+	if cfg.DatabaseURL != "" {
+		if err := postgres.Migrate(context.Background(), cfg.DatabaseURL, "migrations"); err != nil {
+			return nil, fmt.Errorf("migrate gateway database: %w", err)
+		}
+		var err error
+		pool, err = postgres.Open(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			return nil, err
+		}
+		source = postgres.NewRuntimeConfigSource(pool)
+	}
+	reloadManager := runtimeconfig.NewManager(source, runtimeconfig.Applier{
 		Routes:      routeRegistry,
 		Upstreams:   upstreamStore,
 		Credentials: credentialStore,
@@ -87,5 +105,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 			IdleTimeout:  cfg.IdleTimeout,
 		},
 		ConfigReload: reloadManager,
+		pool:         pool,
 	}, nil
+}
+
+func (a *App) Close() {
+	if a != nil && a.pool != nil {
+		a.pool.Close()
+	}
 }
