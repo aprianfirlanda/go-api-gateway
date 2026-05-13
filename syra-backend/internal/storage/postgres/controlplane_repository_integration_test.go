@@ -115,7 +115,7 @@ func TestControlPlaneRepositoryIntegration(t *testing.T) {
 
 	audit := controlplane.AuditEvent{ID: ids.New(), ActorID: "platform_admin", TenantID: tenantA.ID, Action: "route.publish", Resource: "route", ResourceID: route.ID, OccurredAt: now}
 	require.NoError(t, repo.AppendAudit(ctx, audit))
-	audits, err := repo.ListAuditEvents(ctx)
+	audits, err := repo.ListAuditEvents(ctx, controlplane.AuditFilter{})
 	require.NoError(t, err)
 	require.Len(t, audits, 1)
 	require.Equal(t, "route.publish", audits[0].Action)

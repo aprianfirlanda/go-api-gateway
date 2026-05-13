@@ -21,20 +21,19 @@ import (
 	"syra-backend/pkg/ids"
 )
 
-const actorPlatformAdmin = "platform_admin"
-
 type RouterConfig struct {
-	AdminToken  string
-	Store       Repository
-	UsageEvents billing.UsageEventStore
-	Now         func() time.Time
+	AdminToken         string
+	AdminAuthenticator AdminAuthenticator
+	Store              Repository
+	UsageEvents        billing.UsageEventStore
+	Now                func() time.Time
 }
 
 type Handler struct {
-	store       Repository
-	usageEvents billing.UsageEventStore
-	adminToken  string
-	now         func() time.Time
+	store              Repository
+	usageEvents        billing.UsageEventStore
+	adminAuthenticator AdminAuthenticator
+	now                func() time.Time
 }
 
 func NewRouter(cfg RouterConfig) http.Handler {
@@ -47,17 +46,21 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
-	h := &Handler{store: cfg.Store, usageEvents: cfg.UsageEvents, adminToken: cfg.AdminToken, now: cfg.Now}
+	if cfg.AdminAuthenticator == nil {
+		cfg.AdminAuthenticator = StaticAdminAuthenticator{BootstrapToken: cfg.AdminToken}
+	}
+	h := &Handler{store: cfg.Store, usageEvents: cfg.UsageEvents, adminAuthenticator: cfg.AdminAuthenticator, now: cfg.Now}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(h.adminAuth)
 	r.Route("/admin/v1", func(r chi.Router) {
-		r.Post("/billing-plans", h.createBillingPlan)
-		r.Get("/billing-plans", h.listBillingPlans)
-		r.Patch("/billing-plans/{billingPlanId}", h.updateBillingPlan)
-		r.Post("/tenants", h.createTenant)
-		r.Get("/tenants", h.listTenants)
+		r.With(h.requirePlatformAdmin).Post("/billing-plans", h.createBillingPlan)
+		r.With(h.requirePlatformAdmin).Get("/billing-plans", h.listBillingPlans)
+		r.With(h.requirePlatformAdmin).Patch("/billing-plans/{billingPlanId}", h.updateBillingPlan)
+		r.With(h.requirePlatformAdmin).Post("/tenants", h.createTenant)
+		r.With(h.requirePlatformAdmin).Get("/tenants", h.listTenants)
+		r.With(h.requirePlatformAdmin).Get("/audit-logs", h.listAuditLogs)
 		r.Get("/tenants/{tenantId}", h.getTenant)
 		r.Patch("/tenants/{tenantId}", h.updateTenant)
 		r.Route("/tenants/{tenantId}", func(r chi.Router) {
@@ -92,6 +95,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Post("/billing-summaries/{billingPeriod}/recalculate", h.recalculateBillingSummary)
 			r.Post("/billing-summaries/{billingPeriod}/finalize", h.finalizeBillingSummary)
 			r.Get("/billing-summaries/{billingPeriod}/export", h.exportBillingSummary)
+			r.Get("/audit-logs", h.listAuditLogs)
 		})
 	})
 	return r
@@ -99,18 +103,27 @@ func NewRouter(cfg RouterConfig) http.Handler {
 
 func (h *Handler) adminAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		value := r.Header.Get("Authorization")
-		if !strings.HasPrefix(value, prefix) || strings.TrimPrefix(value, prefix) != h.adminToken {
+		identity, err := h.adminAuthenticator.Authenticate(r)
+		if err != nil {
 			writeError(w, r, http.StatusUnauthorized, "unauthorized", "Admin authentication required")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), actorContextKey{}, actorPlatformAdmin)))
+		next.ServeHTTP(w, r.WithContext(contextWithAdminIdentity(r.Context(), identity)))
 	})
 }
 
 func (h *Handler) requireTenant(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := adminIdentityFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthorized", "Admin authentication required")
+			return
+		}
+		tenantID := chi.URLParam(r, "tenantId")
+		if identity.Role == RoleTenantAdmin && identity.TenantID != tenantID {
+			writeError(w, r, http.StatusForbidden, "forbidden", "Tenant admin cannot access another tenant")
+			return
+		}
 		if _, err := h.store.GetTenant(r.Context(), chi.URLParam(r, "tenantId")); err != nil {
 			writeStoreError(w, r, err)
 			return
@@ -119,14 +132,34 @@ func (h *Handler) requireTenant(next http.Handler) http.Handler {
 	})
 }
 
-type actorContextKey struct{}
-
 func actorFromContext(ctx context.Context) string {
-	actor, _ := ctx.Value(actorContextKey{}).(string)
-	if actor == "" {
+	identity, ok := adminIdentityFromContext(ctx)
+	if !ok || identity.ActorID == "" {
 		return "unknown"
 	}
-	return actor
+	return identity.ActorID
+}
+
+func (h *Handler) requirePlatformAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := adminIdentityFromContext(r.Context())
+		if !ok || identity.Role != RolePlatformAdmin {
+			writeError(w, r, http.StatusForbidden, "forbidden", "Platform admin required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *Handler) canAccessTenant(ctx context.Context, tenantID string) bool {
+	identity, ok := adminIdentityFromContext(ctx)
+	if !ok {
+		return false
+	}
+	if identity.Role == RolePlatformAdmin {
+		return true
+	}
+	return identity.Role == RoleTenantAdmin && identity.TenantID == tenantID
 }
 
 func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +196,12 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request) {
-	tenant, err := h.store.GetTenant(r.Context(), chi.URLParam(r, "tenantId"))
+	tenantID := chi.URLParam(r, "tenantId")
+	if !h.canAccessTenant(r.Context(), tenantID) {
+		writeError(w, r, http.StatusForbidden, "forbidden", "Tenant admin cannot access another tenant")
+		return
+	}
+	tenant, err := h.store.GetTenant(r.Context(), tenantID)
 	if err != nil {
 		writeStoreError(w, r, err)
 		return
@@ -173,6 +211,10 @@ func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updateTenant(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
+	if !h.canAccessTenant(r.Context(), tenantID) {
+		writeError(w, r, http.StatusForbidden, "forbidden", "Tenant admin cannot access another tenant")
+		return
+	}
 	tenant, err := h.store.GetTenant(r.Context(), tenantID)
 	if err != nil {
 		writeStoreError(w, r, err)
@@ -927,6 +969,41 @@ func (h *Handler) exportBillingSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r.Context(), tenantID, "billing_summary.export", "billing_summary", period)
+}
+
+func (h *Handler) listAuditLogs(w http.ResponseWriter, r *http.Request) {
+	filter := AuditFilter{
+		TenantID: chi.URLParam(r, "tenantId"),
+		ActorID:  r.URL.Query().Get("actorId"),
+		Action:   r.URL.Query().Get("action"),
+		Resource: r.URL.Query().Get("resource"),
+	}
+	if fromRaw := r.URL.Query().Get("from"); fromRaw != "" {
+		from, err := time.Parse(time.RFC3339, fromRaw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_error", "invalid from")
+			return
+		}
+		filter.From = &from
+	}
+	if toRaw := r.URL.Query().Get("to"); toRaw != "" {
+		to, err := time.Parse(time.RFC3339, toRaw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_error", "invalid to")
+			return
+		}
+		filter.To = &to
+	}
+	identity, _ := adminIdentityFromContext(r.Context())
+	if filter.TenantID == "" && identity.Role == RoleTenantAdmin {
+		filter.TenantID = identity.TenantID
+	}
+	items, err := h.store.ListAuditEvents(r.Context(), filter)
+	if err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, listResponse[AuditEvent]{Data: items})
 }
 
 func (h *Handler) audit(ctx context.Context, tenantID string, action string, resource string, resourceID string) {

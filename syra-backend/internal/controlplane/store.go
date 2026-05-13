@@ -205,13 +205,35 @@ func (s *Store) AppendAudit(ctx context.Context, event AuditEvent) error {
 	return nil
 }
 
-func (s *Store) ListAuditEvents(ctx context.Context) ([]AuditEvent, error) {
+func (s *Store) ListAuditEvents(ctx context.Context, filter AuditFilter) ([]AuditEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]AuditEvent(nil), s.auditEvents...), nil
+	items := make([]AuditEvent, 0, len(s.auditEvents))
+	for _, item := range s.auditEvents {
+		if filter.TenantID != "" && item.TenantID != filter.TenantID {
+			continue
+		}
+		if filter.ActorID != "" && item.ActorID != filter.ActorID {
+			continue
+		}
+		if filter.Action != "" && item.Action != filter.Action {
+			continue
+		}
+		if filter.Resource != "" && item.Resource != filter.Resource {
+			continue
+		}
+		if filter.From != nil && item.OccurredAt.Before(*filter.From) {
+			continue
+		}
+		if filter.To != nil && !item.OccurredAt.Before(*filter.To) {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 func put[T any](ctx context.Context, s *Store, values map[string]T, key string, value T) error {

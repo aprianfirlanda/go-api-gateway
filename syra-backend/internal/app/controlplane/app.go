@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"syra-backend/internal/auth"
 	"syra-backend/internal/billing"
 	"syra-backend/internal/config"
 	cp "syra-backend/internal/controlplane"
@@ -27,9 +29,10 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	router := cp.NewRouter(cp.RouterConfig{
-		AdminToken:  cfg.ControlPlaneAdminToken,
-		Store:       store,
-		UsageEvents: usageEvents,
+		AdminToken:         cfg.ControlPlaneAdminToken,
+		AdminAuthenticator: buildAdminAuthenticator(cfg),
+		Store:              store,
+		UsageEvents:        usageEvents,
 	})
 
 	return &App{
@@ -64,4 +67,35 @@ func openRepository(ctx context.Context, cfg config.Config) (cp.Repository, bill
 		return nil, nil, nil, err
 	}
 	return postgres.NewControlPlaneRepository(pool), postgres.NewUsageEventStore(pool), pool, nil
+}
+
+func buildAdminAuthenticator(cfg config.Config) cp.AdminAuthenticator {
+	authenticator := cp.StaticAdminAuthenticator{BootstrapToken: cfg.ControlPlaneAdminToken}
+	raw := strings.TrimSpace(cfg.ControlPlaneAdminAPIKeys)
+	if raw == "" {
+		return authenticator
+	}
+	records := strings.Split(raw, ",")
+	for _, record := range records {
+		parts := strings.Split(strings.TrimSpace(record), "|")
+		if len(parts) < 3 {
+			continue
+		}
+		prefix, secret, err := auth.ParseAPIKey(parts[0])
+		if err != nil {
+			continue
+		}
+		hash, err := auth.HashSecret(secret)
+		if err != nil {
+			continue
+		}
+		authenticator.APIKeys = append(authenticator.APIKeys, cp.AdminAPIKey{
+			ActorID:    "admin_api_key_" + prefix,
+			Role:       strings.TrimSpace(parts[1]),
+			TenantID:   strings.TrimSpace(parts[2]),
+			KeyPrefix:  prefix,
+			SecretHash: hash,
+		})
+	}
+	return authenticator
 }

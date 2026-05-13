@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"syra-backend/internal/auth"
 	"syra-backend/internal/billing"
 
 	"github.com/stretchr/testify/require"
@@ -48,7 +49,7 @@ func TestTenantAPIWritesAuditEvent(t *testing.T) {
 	require.Equal(t, "Bank A", tenant.Name)
 	require.Equal(t, StatusActive, tenant.Status)
 
-	auditEvents, err := store.ListAuditEvents(context.Background())
+	auditEvents, err := store.ListAuditEvents(context.Background(), AuditFilter{})
 	require.NoError(t, err)
 	require.Len(t, auditEvents, 1)
 	require.Equal(t, "tenant.create", auditEvents[0].Action)
@@ -103,7 +104,7 @@ func TestTenantScopedResourceAPIs(t *testing.T) {
 	require.Len(t, routes.Data, 1)
 	require.Equal(t, route.ID, routes.Data[0].ID)
 
-	auditEvents, err := store.ListAuditEvents(context.Background())
+	auditEvents, err := store.ListAuditEvents(context.Background(), AuditFilter{})
 	require.NoError(t, err)
 	requireAuditAction(t, auditEvents, "api_product.create")
 	requireAuditAction(t, auditEvents, "upstream.create")
@@ -134,7 +135,7 @@ func TestCredentialAPIReturnsFullKeyOnceAndAuditsWithoutSecret(t *testing.T) {
 	require.NotContains(t, stored.SecretHash, credential.APIKey)
 	require.NotContains(t, stored.SecretHash, strings.TrimPrefix(credential.APIKey, credential.KeyPrefix+"."))
 
-	auditEvents, err := store.ListAuditEvents(context.Background())
+	auditEvents, err := store.ListAuditEvents(context.Background(), AuditFilter{})
 	require.NoError(t, err)
 	for _, event := range auditEvents {
 		encoded, err := json.Marshal(event)
@@ -162,7 +163,7 @@ func TestTransformationTemplateAPI(t *testing.T) {
 	require.Equal(t, "published", published.Status)
 	require.NotNil(t, published.PublishedAt)
 
-	auditEvents, err := store.ListAuditEvents(context.Background())
+	auditEvents, err := store.ListAuditEvents(context.Background(), AuditFilter{})
 	require.NoError(t, err)
 	requireAuditAction(t, auditEvents, "transformation_template.create")
 	requireAuditAction(t, auditEvents, "transformation_template.publish")
@@ -228,13 +229,105 @@ func TestBillingAdminAPIs(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "tenant_id,billing_period")
 	require.Contains(t, rec.Body.String(), tenantA.ID)
 
-	audits, err := store.ListAuditEvents(context.Background())
+	audits, err := store.ListAuditEvents(context.Background(), AuditFilter{})
 	require.NoError(t, err)
 	requireAuditAction(t, audits, "billing_plan.create")
 	requireAuditAction(t, audits, "billing_plan.update")
 	requireAuditAction(t, audits, "billing_summary.recalculate")
 	requireAuditAction(t, audits, "billing_summary.finalize")
 	requireAuditAction(t, audits, "billing_summary.export")
+}
+
+func TestTenantAdminCannotMutateOtherTenant(t *testing.T) {
+	store := NewStore()
+	tenantA := Tenant{ID: "tenant_a", Name: "A", Slug: "a", Status: StatusActive, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	tenantB := Tenant{ID: "tenant_b", Name: "B", Slug: "b", Status: StatusActive, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	require.NoError(t, store.CreateTenant(context.Background(), tenantA))
+	require.NoError(t, store.CreateTenant(context.Background(), tenantB))
+
+	secretHash, err := auth.HashSecret("secret")
+	require.NoError(t, err)
+	router := NewRouter(RouterConfig{
+		Store: store,
+		AdminAuthenticator: StaticAdminAuthenticator{
+			APIKeys: []AdminAPIKey{{
+				ActorID:    "tenant-admin-a",
+				Role:       RoleTenantAdmin,
+				TenantID:   tenantA.ID,
+				KeyPrefix:  "adm_live_tenant_a",
+				SecretHash: secretHash,
+			}},
+		},
+		Now: func() time.Time { return time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC) },
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/admin/v1/tenants/"+tenantB.ID, strings.NewReader(`{"name":"hacked"}`))
+	req.Header.Set("Authorization", "ApiKey adm_live_tenant_a.secret")
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+
+	loadedB, err := store.GetTenant(context.Background(), tenantB.ID)
+	require.NoError(t, err)
+	require.Equal(t, "B", loadedB.Name)
+}
+
+func TestPlatformAdminCanManageAllTenants(t *testing.T) {
+	router, _ := newTestRouter()
+	tenantA := createTenant(t, router)
+	require.NotEmpty(t, tenantA)
+	tenantB := postJSON[Tenant](t, router, "/admin/v1/tenants", `{"name":"Bank B","slug":"bank-b"}`).ID
+	require.NotEmpty(t, tenantB)
+	postJSON[APIProduct](t, router, "/admin/v1/tenants/"+tenantA+"/api-products", `{"name":"A Product","slug":"a-product"}`)
+	postJSON[APIProduct](t, router, "/admin/v1/tenants/"+tenantB+"/api-products", `{"name":"B Product","slug":"b-product"}`)
+}
+
+func TestAuditLogReadFilters(t *testing.T) {
+	router, store := newTestRouter()
+	tenantID := createTenant(t, router)
+	_ = postJSON[APIProduct](t, router, "/admin/v1/tenants/"+tenantID+"/api-products", `{"name":"X","slug":"x"}`)
+
+	rec := httptest.NewRecorder()
+	req := newAdminRequest(http.MethodGet, "/admin/v1/tenants/"+tenantID+"/audit-logs?action=api_product.create", "")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var out listResponse[AuditEvent]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.NotEmpty(t, out.Data)
+	for _, item := range out.Data {
+		require.Equal(t, "api_product.create", item.Action)
+		encoded, err := json.Marshal(item)
+		require.NoError(t, err)
+		require.NotContains(t, string(encoded), "apiKey")
+	}
+
+	events, err := store.ListAuditEvents(context.Background(), AuditFilter{TenantID: tenantID})
+	require.NoError(t, err)
+	require.NotEmpty(t, events)
+}
+
+func TestAdminAPIKeyAuthentication(t *testing.T) {
+	store := NewStore()
+	secretHash, err := auth.HashSecret("secret")
+	require.NoError(t, err)
+	router := NewRouter(RouterConfig{
+		Store: store,
+		AdminAuthenticator: StaticAdminAuthenticator{
+			APIKeys: []AdminAPIKey{{
+				ActorID:    "platform-admin",
+				Role:       RolePlatformAdmin,
+				KeyPrefix:  "adm_live_platform",
+				SecretHash: secretHash,
+			}},
+		},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/v1/tenants", strings.NewReader(`{"name":"Bank A","slug":"bank-a"}`))
+	req.Header.Set("Authorization", "ApiKey adm_live_platform.secret")
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
 }
 
 func newTestRouter() (http.Handler, *Store) {

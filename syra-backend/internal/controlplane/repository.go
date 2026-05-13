@@ -2,6 +2,7 @@ package controlplane
 
 import "context"
 import "syra-backend/internal/billing"
+import "time"
 
 type Repository interface {
 	CreateBillingPlan(ctx context.Context, plan billing.BillingPlan) error
@@ -45,5 +46,14 @@ type Repository interface {
 	UpdateTemplate(ctx context.Context, template TransformationTemplate) error
 
 	AppendAudit(ctx context.Context, event AuditEvent) error
-	ListAuditEvents(ctx context.Context) ([]AuditEvent, error)
+	ListAuditEvents(ctx context.Context, filter AuditFilter) ([]AuditEvent, error)
+}
+
+type AuditFilter struct {
+	TenantID string
+	ActorID  string
+	Action   string
+	Resource string
+	From     *time.Time
+	To       *time.Time
 }

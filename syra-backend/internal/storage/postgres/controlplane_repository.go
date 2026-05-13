@@ -454,13 +454,19 @@ func (r *ControlPlaneRepository) AppendAudit(ctx context.Context, event controlp
 	return err
 }
 
-func (r *ControlPlaneRepository) ListAuditEvents(ctx context.Context) ([]controlplane.AuditEvent, error) {
+func (r *ControlPlaneRepository) ListAuditEvents(ctx context.Context, filter controlplane.AuditFilter) ([]controlplane.AuditEvent, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id::text, COALESCE(tenant_id::text, ''), COALESCE(actor_user_id::text, actor_role, ''),
 			action, resource_type, resource_id, COALESCE(after, '{}'::jsonb), occurred_at
 		FROM audit_logs
+		WHERE ($1 = '' OR tenant_id = NULLIF($1, '')::uuid)
+			AND ($2 = '' OR COALESCE(actor_user_id::text, actor_role, '') = $2)
+			AND ($3 = '' OR action = $3)
+			AND ($4 = '' OR resource_type = $4)
+			AND ($5::timestamptz IS NULL OR occurred_at >= $5)
+			AND ($6::timestamptz IS NULL OR occurred_at < $6)
 		ORDER BY occurred_at, id
-	`)
+	`, filter.TenantID, filter.ActorID, filter.Action, filter.Resource, filter.From, filter.To)
 	if err != nil {
 		return nil, err
 	}
