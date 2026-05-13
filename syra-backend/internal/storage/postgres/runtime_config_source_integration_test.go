@@ -208,6 +208,34 @@ func TestRuntimeConfigSyncKeepsLastKnownGoodOnInvalidDatabaseState(t *testing.T)
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestRuntimeConfigSyncLoadsPersistedPolicies(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	repo := NewControlPlaneRepository(pool)
+	source := NewRuntimeConfigSource(pool)
+	now := time.Date(2026, 5, 13, 10, 0, 0, 0, time.UTC)
+	tenantID, productID, upstreamID := seedTenantProductUpstream(t, ctx, repo, now, "http://localhost:9999")
+	rate := controlplane.RateLimitPolicy{
+		ID: ids.New(), TenantID: tenantID, Name: "r1", Scope: "route", LimitCount: 2, WindowSeconds: 60, BurstCount: 0, Status: controlplane.StatusActive, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, repo.CreateRateLimitPolicy(ctx, rate))
+	quota := controlplane.QuotaPolicy{
+		ID: ids.New(), TenantID: tenantID, Name: "q1", Scope: "route", Period: "monthly", QuotaCount: 10, ExceededBehavior: "block", Status: controlplane.StatusActive, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, repo.CreateQuotaPolicy(ctx, quota))
+	require.NoError(t, repo.CreateRoute(ctx, controlplane.Route{
+		ID: ids.New(), TenantID: tenantID, APIProductID: productID, Name: "r", InboundProtocol: restprotocol.Name, OutboundProtocol: restprotocol.Name,
+		Host: "api.local.test", Method: http.MethodGet, Path: "/x", UpstreamID: upstreamID, RateLimitPolicyID: rate.ID, QuotaPolicyID: quota.ID,
+		Priority: 100, TimeoutMs: 1000, Status: controlplane.StatusActive, CreatedAt: now, UpdatedAt: now,
+	}))
+	snapshot, err := source.Load(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, snapshot.RateLimits)
+	require.NotEmpty(t, snapshot.Quotas)
+	require.Equal(t, rate.ID, snapshot.Routes[0].RateLimitPolicyID)
+	require.Equal(t, quota.ID, snapshot.Routes[0].QuotaPolicyID)
+}
+
 func seedTenantProductUpstream(t *testing.T, ctx context.Context, repo *ControlPlaneRepository, now time.Time, upstreamBaseURL string) (string, string, string) {
 	t.Helper()
 	tenant := controlplane.Tenant{

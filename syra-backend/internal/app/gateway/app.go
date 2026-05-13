@@ -61,6 +61,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	routeRegistry := route.NewInMemoryRegistry()
 	upstreamStore := upstream.NewInMemoryStore()
 	templateStore := transform.NewInMemoryStore()
+	runtimePolicies := policy.NewRuntimePolicyStore()
 	usageEvents := billing.NewInMemoryUsageEventStore()
 	metrics := observability.NewMetrics()
 	source := runtimeconfig.SnapshotSource(runtimeconfig.StaticSource{
@@ -100,10 +101,13 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	healthService := health.NewService(health.NewMultiPinger(pingers...))
 	reloadManager := runtimeconfig.NewManager(source, runtimeconfig.Applier{
 		Routes:      routeRegistry,
+		Products:    runtimePolicies,
 		Upstreams:   upstreamStore,
 		Credentials: credentialStore,
 		Templates:   templateStore,
 		Profiles:    profileStore,
+		RateLimits:  runtimePolicies,
+		Quotas:      runtimePolicies,
 	}, logger)
 	_ = reloadManager.Reload(context.Background())
 
@@ -121,6 +125,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		Metrics:         metrics,
 		BodyLimit:       cfg.RequestBodyLimit,
 		RuntimeState:    runtimeStateStore,
+		RuntimePolicies: runtimePolicies,
 	})
 
 	return &App{

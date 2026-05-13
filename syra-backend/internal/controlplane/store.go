@@ -14,6 +14,8 @@ type Store struct {
 	mu          sync.RWMutex
 	tenants     map[string]Tenant
 	products    map[string]APIProduct
+	rateLimits  map[string]RateLimitPolicy
+	quotas      map[string]QuotaPolicy
 	upstreams   map[string]Upstream
 	routes      map[string]Route
 	consumers   map[string]Consumer
@@ -28,6 +30,8 @@ func NewStore() *Store {
 	return &Store{
 		tenants:     map[string]Tenant{},
 		products:    map[string]APIProduct{},
+		rateLimits:  map[string]RateLimitPolicy{},
+		quotas:      map[string]QuotaPolicy{},
 		upstreams:   map[string]Upstream{},
 		routes:      map[string]Route{},
 		consumers:   map[string]Consumer{},
@@ -125,6 +129,38 @@ func (s *Store) GetAPIProduct(ctx context.Context, tenantID, id string) (APIProd
 
 func (s *Store) UpdateAPIProduct(ctx context.Context, product APIProduct) error {
 	return s.CreateAPIProduct(ctx, product)
+}
+
+func (s *Store) CreateRateLimitPolicy(ctx context.Context, policy RateLimitPolicy) error {
+	return put(ctx, s, s.rateLimits, tenantKey(policy.TenantID, policy.ID), policy)
+}
+
+func (s *Store) ListRateLimitPolicies(ctx context.Context, tenantID string) ([]RateLimitPolicy, error) {
+	return listTenantValues(ctx, s, s.rateLimits, tenantID)
+}
+
+func (s *Store) GetRateLimitPolicy(ctx context.Context, tenantID, id string) (RateLimitPolicy, error) {
+	return get(ctx, s, s.rateLimits, tenantKey(tenantID, id))
+}
+
+func (s *Store) UpdateRateLimitPolicy(ctx context.Context, policy RateLimitPolicy) error {
+	return s.CreateRateLimitPolicy(ctx, policy)
+}
+
+func (s *Store) CreateQuotaPolicy(ctx context.Context, policy QuotaPolicy) error {
+	return put(ctx, s, s.quotas, tenantKey(policy.TenantID, policy.ID), policy)
+}
+
+func (s *Store) ListQuotaPolicies(ctx context.Context, tenantID string) ([]QuotaPolicy, error) {
+	return listTenantValues(ctx, s, s.quotas, tenantID)
+}
+
+func (s *Store) GetQuotaPolicy(ctx context.Context, tenantID, id string) (QuotaPolicy, error) {
+	return get(ctx, s, s.quotas, tenantKey(tenantID, id))
+}
+
+func (s *Store) UpdateQuotaPolicy(ctx context.Context, policy QuotaPolicy) error {
+	return s.CreateQuotaPolicy(ctx, policy)
 }
 
 func (s *Store) CreateUpstream(ctx context.Context, upstream Upstream) error {
@@ -284,6 +320,8 @@ func tenantKey(tenantID, id string) string {
 }
 
 func (p APIProduct) GetTenantID() string             { return p.TenantID }
+func (p RateLimitPolicy) GetTenantID() string        { return p.TenantID }
+func (p QuotaPolicy) GetTenantID() string            { return p.TenantID }
 func (u Upstream) GetTenantID() string               { return u.TenantID }
 func (r Route) GetTenantID() string                  { return r.TenantID }
 func (t TransformationTemplate) GetTenantID() string { return t.TenantID }

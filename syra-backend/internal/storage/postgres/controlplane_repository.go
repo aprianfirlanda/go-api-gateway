@@ -197,9 +197,9 @@ func (r *ControlPlaneRepository) UpdateTenant(ctx context.Context, tenant contro
 
 func (r *ControlPlaneRepository) CreateAPIProduct(ctx context.Context, product controlplane.APIProduct) error {
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO api_products (id, tenant_id, name, slug, description, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, product.ID, product.TenantID, product.Name, product.Slug, nullableString(product.Description), product.Status, product.CreatedAt, product.UpdatedAt)
+		INSERT INTO api_products (id, tenant_id, name, slug, description, rate_limit_policy_id, quota_policy_id, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, product.ID, product.TenantID, product.Name, product.Slug, nullableString(product.Description), nullableString(product.RateLimitPolicyID), nullableString(product.QuotaPolicyID), product.Status, product.CreatedAt, product.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func (r *ControlPlaneRepository) CreateAPIProduct(ctx context.Context, product c
 
 func (r *ControlPlaneRepository) ListAPIProducts(ctx context.Context, tenantID string) ([]controlplane.APIProduct, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id::text, tenant_id::text, name, slug, COALESCE(description, ''), status, created_at, updated_at
+		SELECT id::text, tenant_id::text, name, slug, COALESCE(description, ''), COALESCE(rate_limit_policy_id::text, ''), COALESCE(quota_policy_id::text, ''), status, created_at, updated_at
 		FROM api_products
 		WHERE tenant_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at, id
@@ -222,7 +222,7 @@ func (r *ControlPlaneRepository) ListAPIProducts(ctx context.Context, tenantID s
 
 func (r *ControlPlaneRepository) GetAPIProduct(ctx context.Context, tenantID, id string) (controlplane.APIProduct, error) {
 	return scanAPIProduct(r.db.QueryRow(ctx, `
-		SELECT id::text, tenant_id::text, name, slug, COALESCE(description, ''), status, created_at, updated_at
+		SELECT id::text, tenant_id::text, name, slug, COALESCE(description, ''), COALESCE(rate_limit_policy_id::text, ''), COALESCE(quota_policy_id::text, ''), status, created_at, updated_at
 		FROM api_products
 		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
 	`, tenantID, id))
@@ -231,9 +231,99 @@ func (r *ControlPlaneRepository) GetAPIProduct(ctx context.Context, tenantID, id
 func (r *ControlPlaneRepository) UpdateAPIProduct(ctx context.Context, product controlplane.APIProduct) error {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE api_products
-		SET name = $3, slug = $4, description = $5, status = $6, updated_at = $7
+		SET name = $3, slug = $4, description = $5, rate_limit_policy_id = $6, quota_policy_id = $7, status = $8, updated_at = $9
 		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
-	`, product.TenantID, product.ID, product.Name, product.Slug, nullableString(product.Description), product.Status, product.UpdatedAt)
+	`, product.TenantID, product.ID, product.Name, product.Slug, nullableString(product.Description), nullableString(product.RateLimitPolicyID), nullableString(product.QuotaPolicyID), product.Status, product.UpdatedAt)
+	if err := rowsAffected(tag, err); err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
+}
+
+func (r *ControlPlaneRepository) CreateRateLimitPolicy(ctx context.Context, policy controlplane.RateLimitPolicy) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO rate_limit_policies (id, tenant_id, name, scope, limit_count, window_seconds, burst_count, status, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+	`, policy.ID, policy.TenantID, policy.Name, policy.Scope, policy.LimitCount, policy.WindowSeconds, policy.BurstCount, policy.Status, policy.CreatedAt, policy.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
+}
+
+func (r *ControlPlaneRepository) ListRateLimitPolicies(ctx context.Context, tenantID string) ([]controlplane.RateLimitPolicy, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id::text, tenant_id::text, name, scope, limit_count, window_seconds, burst_count, status, created_at, updated_at
+		FROM rate_limit_policies
+		WHERE tenant_id = $1 AND deleted_at IS NULL
+		ORDER BY created_at, id
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectRows(rows, scanRateLimitPolicy)
+}
+
+func (r *ControlPlaneRepository) GetRateLimitPolicy(ctx context.Context, tenantID, id string) (controlplane.RateLimitPolicy, error) {
+	return scanRateLimitPolicy(r.db.QueryRow(ctx, `
+		SELECT id::text, tenant_id::text, name, scope, limit_count, window_seconds, burst_count, status, created_at, updated_at
+		FROM rate_limit_policies
+		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+	`, tenantID, id))
+}
+
+func (r *ControlPlaneRepository) UpdateRateLimitPolicy(ctx context.Context, policy controlplane.RateLimitPolicy) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE rate_limit_policies
+		SET name = $3, scope = $4, limit_count = $5, window_seconds = $6, burst_count = $7, status = $8, updated_at = $9
+		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+	`, policy.TenantID, policy.ID, policy.Name, policy.Scope, policy.LimitCount, policy.WindowSeconds, policy.BurstCount, policy.Status, policy.UpdatedAt)
+	if err := rowsAffected(tag, err); err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
+}
+
+func (r *ControlPlaneRepository) CreateQuotaPolicy(ctx context.Context, policy controlplane.QuotaPolicy) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO quota_policies (id, tenant_id, name, scope, period, quota_count, exceeded_behavior, status, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+	`, policy.ID, policy.TenantID, policy.Name, policy.Scope, policy.Period, policy.QuotaCount, policy.ExceededBehavior, policy.Status, policy.CreatedAt, policy.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	return r.bumpRuntimeConfigVersion(ctx)
+}
+
+func (r *ControlPlaneRepository) ListQuotaPolicies(ctx context.Context, tenantID string) ([]controlplane.QuotaPolicy, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id::text, tenant_id::text, name, scope, period, quota_count, exceeded_behavior, status, created_at, updated_at
+		FROM quota_policies
+		WHERE tenant_id = $1 AND deleted_at IS NULL
+		ORDER BY created_at, id
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectRows(rows, scanQuotaPolicy)
+}
+
+func (r *ControlPlaneRepository) GetQuotaPolicy(ctx context.Context, tenantID, id string) (controlplane.QuotaPolicy, error) {
+	return scanQuotaPolicy(r.db.QueryRow(ctx, `
+		SELECT id::text, tenant_id::text, name, scope, period, quota_count, exceeded_behavior, status, created_at, updated_at
+		FROM quota_policies
+		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+	`, tenantID, id))
+}
+
+func (r *ControlPlaneRepository) UpdateQuotaPolicy(ctx context.Context, policy controlplane.QuotaPolicy) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE quota_policies
+		SET name = $3, scope = $4, period = $5, quota_count = $6, exceeded_behavior = $7, status = $8, updated_at = $9
+		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+	`, policy.TenantID, policy.ID, policy.Name, policy.Scope, policy.Period, policy.QuotaCount, policy.ExceededBehavior, policy.Status, policy.UpdatedAt)
 	if err := rowsAffected(tag, err); err != nil {
 		return err
 	}
@@ -509,10 +599,26 @@ func scanTenant(row rowScanner) (controlplane.Tenant, error) {
 
 func scanAPIProduct(row rowScanner) (controlplane.APIProduct, error) {
 	var product controlplane.APIProduct
-	if err := row.Scan(&product.ID, &product.TenantID, &product.Name, &product.Slug, &product.Description, &product.Status, &product.CreatedAt, &product.UpdatedAt); err != nil {
+	if err := row.Scan(&product.ID, &product.TenantID, &product.Name, &product.Slug, &product.Description, &product.RateLimitPolicyID, &product.QuotaPolicyID, &product.Status, &product.CreatedAt, &product.UpdatedAt); err != nil {
 		return controlplane.APIProduct{}, mapNotFound(err)
 	}
 	return product, nil
+}
+
+func scanRateLimitPolicy(row rowScanner) (controlplane.RateLimitPolicy, error) {
+	var policy controlplane.RateLimitPolicy
+	if err := row.Scan(&policy.ID, &policy.TenantID, &policy.Name, &policy.Scope, &policy.LimitCount, &policy.WindowSeconds, &policy.BurstCount, &policy.Status, &policy.CreatedAt, &policy.UpdatedAt); err != nil {
+		return controlplane.RateLimitPolicy{}, mapNotFound(err)
+	}
+	return policy, nil
+}
+
+func scanQuotaPolicy(row rowScanner) (controlplane.QuotaPolicy, error) {
+	var policy controlplane.QuotaPolicy
+	if err := row.Scan(&policy.ID, &policy.TenantID, &policy.Name, &policy.Scope, &policy.Period, &policy.QuotaCount, &policy.ExceededBehavior, &policy.Status, &policy.CreatedAt, &policy.UpdatedAt); err != nil {
+		return controlplane.QuotaPolicy{}, mapNotFound(err)
+	}
+	return policy, nil
 }
 
 func scanUpstream(row rowScanner) (controlplane.Upstream, error) {

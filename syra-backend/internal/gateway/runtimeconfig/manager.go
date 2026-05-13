@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/protocol/iso8583"
@@ -23,8 +24,15 @@ type Applier struct {
 	Credentials interface {
 		Replace(...auth.APIKeyCredential)
 	}
-	Templates interface{ Replace(...transform.Template) }
-	Profiles  interface{ Replace(...iso8583.Profile) }
+	Templates  interface{ Replace(...transform.Template) }
+	Profiles   interface{ Replace(...iso8583.Profile) }
+	RateLimits interface {
+		ReplaceRateLimits(...policy.RateLimitConfig)
+	}
+	Quotas   interface{ ReplaceQuotas(...policy.QuotaConfig) }
+	Products interface {
+		ReplaceProducts(...policy.APIProductBinding)
+	}
 }
 
 type Manager struct {
@@ -116,6 +124,15 @@ func (m *Manager) apply(snapshot Snapshot) {
 	}
 	if m.applier.Profiles != nil {
 		m.applier.Profiles.Replace(snapshot.Profiles...)
+	}
+	if m.applier.RateLimits != nil {
+		m.applier.RateLimits.ReplaceRateLimits(snapshot.RateLimits...)
+	}
+	if m.applier.Quotas != nil {
+		m.applier.Quotas.ReplaceQuotas(snapshot.Quotas...)
+	}
+	if m.applier.Products != nil {
+		m.applier.Products.ReplaceProducts(snapshot.APIProducts...)
 	}
 }
 

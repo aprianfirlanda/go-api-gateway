@@ -307,6 +307,26 @@ func TestAuditLogReadFilters(t *testing.T) {
 	require.NotEmpty(t, events)
 }
 
+func TestPolicyCRUDAndAssignments(t *testing.T) {
+	router, _ := newTestRouter()
+	tenantID := createTenant(t, router)
+	rate := postJSON[RateLimitPolicy](t, router, "/admin/v1/tenants/"+tenantID+"/rate-limit-policies", `{
+		"name":"route-limit","scope":"route","limitCount":2,"windowSeconds":60,"burstCount":0,"algorithm":"fixed_window","status":"active"
+	}`)
+	quota := postJSON[QuotaPolicy](t, router, "/admin/v1/tenants/"+tenantID+"/quota-policies", `{
+		"name":"monthly-quota","scope":"api_product","period":"monthly","quotaCount":100,"exceededBehavior":"block","status":"active"
+	}`)
+	product := postJSON[APIProduct](t, router, "/admin/v1/tenants/"+tenantID+"/api-products", `{
+		"name":"Payments","slug":"payments","rateLimitPolicyId":"`+rate.ID+`","quotaPolicyId":"`+quota.ID+`"
+	}`)
+	require.Equal(t, rate.ID, product.RateLimitPolicyID)
+	require.Equal(t, quota.ID, product.QuotaPolicyID)
+	updatedRate := requestJSON[RateLimitPolicy](t, router, http.MethodPatch, "/admin/v1/tenants/"+tenantID+"/rate-limit-policies/"+rate.ID, `{"limitCount":3}`, http.StatusOK)
+	require.Equal(t, 3, updatedRate.LimitCount)
+	updatedQuota := requestJSON[QuotaPolicy](t, router, http.MethodPatch, "/admin/v1/tenants/"+tenantID+"/quota-policies/"+quota.ID, `{"quotaCount":200}`, http.StatusOK)
+	require.Equal(t, int64(200), updatedQuota.QuotaCount)
+}
+
 func TestAdminAPIKeyAuthentication(t *testing.T) {
 	store := NewStore()
 	secretHash, err := auth.HashSecret("secret")

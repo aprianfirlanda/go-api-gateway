@@ -30,33 +30,35 @@ import (
 )
 
 type GatewayHandler struct {
-	routes       route.Registry
-	upstreams    upstream.Store
-	adapters     *protocol.Registry
-	templates    transform.Store
-	transforms   *transform.Engine
-	policies     *policy.Pipeline
-	runtimeState state.Store
-	usageEvents  billing.UsageEventStore
-	metrics      *observability.Metrics
-	logger       *slog.Logger
+	routes          route.Registry
+	upstreams       upstream.Store
+	adapters        *protocol.Registry
+	templates       transform.Store
+	transforms      *transform.Engine
+	policies        *policy.Pipeline
+	runtimeState    state.Store
+	runtimePolicies *policy.RuntimePolicyStore
+	usageEvents     billing.UsageEventStore
+	metrics         *observability.Metrics
+	logger          *slog.Logger
 }
 
-func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine, policies *policy.Pipeline, usageEvents billing.UsageEventStore, metrics *observability.Metrics, runtimeState state.Store, logger *slog.Logger) *GatewayHandler {
+func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine, policies *policy.Pipeline, usageEvents billing.UsageEventStore, metrics *observability.Metrics, runtimeState state.Store, runtimePolicies *policy.RuntimePolicyStore, logger *slog.Logger) *GatewayHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &GatewayHandler{
-		routes:       routes,
-		upstreams:    upstreams,
-		adapters:     adapters,
-		templates:    templates,
-		transforms:   transforms,
-		policies:     policies,
-		runtimeState: runtimeState,
-		usageEvents:  usageEvents,
-		metrics:      metrics,
-		logger:       logger,
+		routes:          routes,
+		upstreams:       upstreams,
+		adapters:        adapters,
+		templates:       templates,
+		transforms:      transforms,
+		policies:        policies,
+		runtimeState:    runtimeState,
+		runtimePolicies: runtimePolicies,
+		usageEvents:     usageEvents,
+		metrics:         metrics,
+		logger:          logger,
 	}
 }
 
@@ -124,7 +126,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sourceProtocol := protocolName(matchedRoute.InboundProtocol, restprotocol.Name)
 	usageEvent.SourceProtocol = sourceProtocol
-	if err := h.evaluatePolicy(r.Context(), policy.Request{
+	if err := h.evaluatePolicy(r.Context(), matchedRoute, policy.Request{
 		TenantID:   principal.TenantID,
 		ConsumerID: principal.ConsumerID,
 		RouteID:    matchedRoute.ID,
@@ -421,9 +423,47 @@ func (h *GatewayHandler) emitUsageEvent(ctx context.Context, event billing.Usage
 	}
 }
 
-func (h *GatewayHandler) evaluatePolicy(ctx context.Context, req policy.Request) error {
+func (h *GatewayHandler) evaluatePolicy(ctx context.Context, matchedRoute route.Route, req policy.Request) error {
 	if req.SizeBytes < 0 {
 		req.SizeBytes = 0
+	}
+	if h.runtimePolicies != nil {
+		ratePolicyID := matchedRoute.RateLimitPolicyID
+		quotaPolicyID := matchedRoute.QuotaPolicyID
+		if product, ok := h.runtimePolicies.Product(req.TenantID, matchedRoute.APIProductID); ok {
+			if ratePolicyID == "" {
+				ratePolicyID = product.RateLimitPolicyID
+			}
+			if quotaPolicyID == "" {
+				quotaPolicyID = product.QuotaPolicyID
+			}
+		}
+		if ratePolicyID != "" {
+			cfg, ok := h.runtimePolicies.RateLimit(req.TenantID, ratePolicyID)
+			if !ok {
+				return policy.ErrRateLimited
+			}
+			allow, err := policy.NewDistributedRateLimiter(h.runtimeState).Allow(ctx, req.TenantID+":"+req.ConsumerID+":"+req.RouteID, req.Now, cfg)
+			if err != nil {
+				return err
+			}
+			if !allow {
+				return policy.ErrRateLimited
+			}
+		}
+		if quotaPolicyID != "" {
+			cfg, ok := h.runtimePolicies.Quota(req.TenantID, quotaPolicyID)
+			if !ok {
+				return policy.ErrQuotaExceeded
+			}
+			allow, err := policy.NewDistributedQuotaChecker(h.runtimeState).Allow(ctx, req, cfg)
+			if err != nil {
+				return err
+			}
+			if !allow {
+				return policy.ErrQuotaExceeded
+			}
+		}
 	}
 	return h.policies.Evaluate(ctx, req)
 }

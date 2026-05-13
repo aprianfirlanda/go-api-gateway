@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
 	"syra-backend/internal/protocol/iso8583"
@@ -17,10 +18,13 @@ type Snapshot struct {
 	Status      string
 	PublishedAt time.Time
 	Routes      []route.Route
+	APIProducts []policy.APIProductBinding
 	Upstreams   []upstream.Upstream
 	Credentials []auth.APIKeyCredential
 	Templates   []transform.Template
 	Profiles    []iso8583.Profile
+	RateLimits  []policy.RateLimitConfig
+	Quotas      []policy.QuotaConfig
 }
 
 func (s Snapshot) Validate() error {

@@ -74,6 +74,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Get("/upstreams", h.listUpstreams)
 			r.Patch("/upstreams/{upstreamId}", h.updateUpstream)
 
+			r.Post("/rate-limit-policies", h.createRateLimitPolicy)
+			r.Get("/rate-limit-policies", h.listRateLimitPolicies)
+			r.Patch("/rate-limit-policies/{policyId}", h.updateRateLimitPolicy)
+			r.Post("/quota-policies", h.createQuotaPolicy)
+			r.Get("/quota-policies", h.listQuotaPolicies)
+			r.Patch("/quota-policies/{policyId}", h.updateQuotaPolicy)
+
 			r.Post("/routes", h.createRoute)
 			r.Get("/routes", h.listRoutes)
 			r.Get("/routes/{routeId}", h.getRoute)
@@ -249,9 +256,11 @@ func (h *Handler) updateTenant(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createAPIProduct(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenantId")
 	var req struct {
-		Name        string `json:"name"`
-		Slug        string `json:"slug"`
-		Description string `json:"description"`
+		Name              string `json:"name"`
+		Slug              string `json:"slug"`
+		Description       string `json:"description"`
+		RateLimitPolicyID string `json:"rateLimitPolicyId"`
+		QuotaPolicyID     string `json:"quotaPolicyId"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -261,7 +270,7 @@ func (h *Handler) createAPIProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.now()
-	product := APIProduct{ID: ids.New(), TenantID: tenantID, Name: req.Name, Slug: req.Slug, Description: req.Description, Status: StatusActive, CreatedAt: now, UpdatedAt: now}
+	product := APIProduct{ID: ids.New(), TenantID: tenantID, Name: req.Name, Slug: req.Slug, Description: req.Description, RateLimitPolicyID: req.RateLimitPolicyID, QuotaPolicyID: req.QuotaPolicyID, Status: StatusActive, CreatedAt: now, UpdatedAt: now}
 	if err := h.store.CreateAPIProduct(r.Context(), product); err != nil {
 		writeInternal(w, r, err)
 		return
@@ -296,9 +305,11 @@ func (h *Handler) updateAPIProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name        *string `json:"name"`
-		Description *string `json:"description"`
-		Status      *string `json:"status"`
+		Name              *string `json:"name"`
+		Description       *string `json:"description"`
+		RateLimitPolicyID *string `json:"rateLimitPolicyId"`
+		QuotaPolicyID     *string `json:"quotaPolicyId"`
+		Status            *string `json:"status"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -308,6 +319,12 @@ func (h *Handler) updateAPIProduct(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Description != nil {
 		item.Description = *req.Description
+	}
+	if req.RateLimitPolicyID != nil {
+		item.RateLimitPolicyID = *req.RateLimitPolicyID
+	}
+	if req.QuotaPolicyID != nil {
+		item.QuotaPolicyID = *req.QuotaPolicyID
 	}
 	if req.Status != nil {
 		item.Status = *req.Status
@@ -397,6 +414,158 @@ func (h *Handler) updateUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r.Context(), tenantID, "upstream.update", "upstream", item.ID)
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (h *Handler) createRateLimitPolicy(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	var req RateLimitPolicy
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Name == "" || req.Scope == "" || req.LimitCount <= 0 || req.WindowSeconds <= 0 {
+		writeError(w, r, http.StatusBadRequest, "validation_error", "name, scope, limitCount, and windowSeconds are required")
+		return
+	}
+	if req.Status == "" {
+		req.Status = StatusActive
+	}
+	if req.Algorithm == "" {
+		req.Algorithm = "fixed_window"
+	}
+	now := h.now()
+	req.ID = ids.New()
+	req.TenantID = tenantID
+	req.CreatedAt = now
+	req.UpdatedAt = now
+	if err := h.store.CreateRateLimitPolicy(r.Context(), req); err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	h.audit(r.Context(), tenantID, "rate_limit_policy.create", "rate_limit_policy", req.ID)
+	writeJSON(w, http.StatusCreated, req)
+}
+
+func (h *Handler) listRateLimitPolicies(w http.ResponseWriter, r *http.Request) {
+	items, err := h.store.ListRateLimitPolicies(r.Context(), chi.URLParam(r, "tenantId"))
+	if err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, listResponse[RateLimitPolicy]{Data: items})
+}
+
+func (h *Handler) updateRateLimitPolicy(w http.ResponseWriter, r *http.Request) {
+	tenantID, id := chi.URLParam(r, "tenantId"), chi.URLParam(r, "policyId")
+	item, err := h.store.GetRateLimitPolicy(r.Context(), tenantID, id)
+	if err != nil {
+		writeStoreError(w, r, err)
+		return
+	}
+	var req RateLimitPolicy
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Name != "" {
+		item.Name = req.Name
+	}
+	if req.Scope != "" {
+		item.Scope = req.Scope
+	}
+	if req.LimitCount > 0 {
+		item.LimitCount = req.LimitCount
+	}
+	if req.WindowSeconds > 0 {
+		item.WindowSeconds = req.WindowSeconds
+	}
+	if req.BurstCount != 0 {
+		item.BurstCount = req.BurstCount
+	}
+	if req.Algorithm != "" {
+		item.Algorithm = req.Algorithm
+	}
+	if req.Status != "" {
+		item.Status = req.Status
+	}
+	item.UpdatedAt = h.now()
+	if err := h.store.UpdateRateLimitPolicy(r.Context(), item); err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	h.audit(r.Context(), tenantID, "rate_limit_policy.update", "rate_limit_policy", item.ID)
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (h *Handler) createQuotaPolicy(w http.ResponseWriter, r *http.Request) {
+	tenantID := chi.URLParam(r, "tenantId")
+	var req QuotaPolicy
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Name == "" || req.Scope == "" || req.Period == "" || req.QuotaCount <= 0 || req.ExceededBehavior == "" {
+		writeError(w, r, http.StatusBadRequest, "validation_error", "name, scope, period, quotaCount, and exceededBehavior are required")
+		return
+	}
+	if req.Status == "" {
+		req.Status = StatusActive
+	}
+	now := h.now()
+	req.ID = ids.New()
+	req.TenantID = tenantID
+	req.CreatedAt = now
+	req.UpdatedAt = now
+	if err := h.store.CreateQuotaPolicy(r.Context(), req); err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	h.audit(r.Context(), tenantID, "quota_policy.create", "quota_policy", req.ID)
+	writeJSON(w, http.StatusCreated, req)
+}
+
+func (h *Handler) listQuotaPolicies(w http.ResponseWriter, r *http.Request) {
+	items, err := h.store.ListQuotaPolicies(r.Context(), chi.URLParam(r, "tenantId"))
+	if err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, listResponse[QuotaPolicy]{Data: items})
+}
+
+func (h *Handler) updateQuotaPolicy(w http.ResponseWriter, r *http.Request) {
+	tenantID, id := chi.URLParam(r, "tenantId"), chi.URLParam(r, "policyId")
+	item, err := h.store.GetQuotaPolicy(r.Context(), tenantID, id)
+	if err != nil {
+		writeStoreError(w, r, err)
+		return
+	}
+	var req QuotaPolicy
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Name != "" {
+		item.Name = req.Name
+	}
+	if req.Scope != "" {
+		item.Scope = req.Scope
+	}
+	if req.Period != "" {
+		item.Period = req.Period
+	}
+	if req.QuotaCount > 0 {
+		item.QuotaCount = req.QuotaCount
+	}
+	if req.ExceededBehavior != "" {
+		item.ExceededBehavior = req.ExceededBehavior
+	}
+	if req.Status != "" {
+		item.Status = req.Status
+	}
+	item.UpdatedAt = h.now()
+	if err := h.store.UpdateQuotaPolicy(r.Context(), item); err != nil {
+		writeInternal(w, r, err)
+		return
+	}
+	h.audit(r.Context(), tenantID, "quota_policy.update", "quota_policy", item.ID)
 	writeJSON(w, http.StatusOK, item)
 }
 

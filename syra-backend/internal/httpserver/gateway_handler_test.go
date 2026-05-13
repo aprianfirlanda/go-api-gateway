@@ -627,6 +627,7 @@ type gatewayTestConfig struct {
 	usageEvents         billing.UsageEventStore
 	route               route.Route
 	runtimeState        state.Store
+	runtimePolicies     *policy.RuntimePolicyStore
 }
 
 func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
@@ -707,6 +708,7 @@ func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
 		PolicyPipeline:  cfg.policies,
 		UsageEventStore: cfg.usageEvents,
 		RuntimeState:    cfg.runtimeState,
+		RuntimePolicies: cfg.runtimePolicies,
 	})
 }
 
@@ -912,6 +914,71 @@ func TestGatewayRouteRateLimitPolicy(t *testing.T) {
 	}
 }
 
+func TestGatewayRouteAppliesAPIProductRateLimitPolicy(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstreamServer.Close)
+	policyStore := policy.NewRuntimePolicyStore()
+	policyStore.ReplaceRateLimits(policy.RateLimitConfig{
+		ID: "rl_1", TenantID: "tenant_1", Scope: "api_product", LimitCount: 1, WindowSeconds: 60, Algorithm: "fixed_window", Status: "active",
+	})
+	policyStore.ReplaceProducts(policy.APIProductBinding{
+		ID: "product_1", TenantID: "tenant_1", RateLimitPolicyID: "rl_1",
+	})
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		upstreamBaseURL: upstreamServer.URL,
+		runtimeState:    state.NewInMemoryStore(state.Namespacer{Environment: "test", Version: "v1"}),
+		runtimePolicies: policyStore,
+	})
+	for idx := 0; idx < 2; idx++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+		req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+		router.ServeHTTP(rec, req)
+		if idx == 0 {
+			require.Equal(t, http.StatusOK, rec.Code)
+		} else {
+			require.Equal(t, http.StatusTooManyRequests, rec.Code)
+		}
+	}
+}
+
+func TestGatewayRouteRedisUnavailableBehaviorIsExplicit(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstreamServer.Close)
+	policyStore := policy.NewRuntimePolicyStore()
+	policyStore.ReplaceRateLimits(policy.RateLimitConfig{
+		ID: "rl_1", TenantID: "tenant_1", Scope: "route", LimitCount: 1, WindowSeconds: 60, Algorithm: "fixed_window", Status: "active",
+	})
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		upstreamBaseURL: upstreamServer.URL,
+		route: route.Route{
+			ID:                "route_1",
+			TenantID:          "tenant_1",
+			APIProductID:      "product_1",
+			InboundProtocol:   restprotocol.Name,
+			OutboundProtocol:  restprotocol.Name,
+			UpstreamRef:       "upstream_1",
+			Host:              "api.example.test",
+			Method:            http.MethodGet,
+			Path:              "/accounts",
+			RateLimitPolicyID: "rl_1",
+			Status:            route.StatusActive,
+		},
+		runtimeState:    failingStateStore{},
+		runtimePolicies: policyStore,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.JSONEq(t, `{"error":{"code":"policy_error","message":"Policy evaluation failed"}}`, rec.Body.String())
+}
+
 func TestGatewayRouteReturnsBadGatewayWhenUpstreamMissing(t *testing.T) {
 	router := NewRouter(Dependencies{
 		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
@@ -1110,4 +1177,30 @@ func gatewayISOProfile() iso8583.Profile {
 		},
 		SensitiveKeys: []string{"2"},
 	}
+}
+
+type failingStateStore struct{}
+
+func (f failingStateStore) Set(context.Context, state.Key, string, time.Duration) error {
+	return context.Canceled
+}
+
+func (f failingStateStore) Get(context.Context, state.Key) (string, bool, error) {
+	return "", false, context.Canceled
+}
+
+func (f failingStateStore) Increment(context.Context, state.Key, int64, time.Duration) (int64, error) {
+	return 0, context.Canceled
+}
+
+func (f failingStateStore) Expire(context.Context, state.Key, time.Duration) error {
+	return context.Canceled
+}
+
+func (f failingStateStore) Delete(context.Context, state.Key) error {
+	return context.Canceled
+}
+
+func (f failingStateStore) CompareAndSet(context.Context, state.Key, string, string, time.Duration) (bool, error) {
+	return false, context.Canceled
 }

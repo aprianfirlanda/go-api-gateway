@@ -19,6 +19,8 @@ type Route struct {
 	Path               string
 	UpstreamRef        string
 	TemplateRef        string
+	RateLimitPolicyID  string
+	QuotaPolicyID      string
 	TimeoutMs          int
 	RequiredScopes     []string
 	HMACEnabled        bool

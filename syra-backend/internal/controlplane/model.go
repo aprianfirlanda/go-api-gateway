@@ -25,14 +25,43 @@ type Tenant struct {
 }
 
 type APIProduct struct {
-	ID          string    `json:"id"`
-	TenantID    string    `json:"tenantId"`
-	Name        string    `json:"name"`
-	Slug        string    `json:"slug"`
-	Description string    `json:"description,omitempty"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID                string    `json:"id"`
+	TenantID          string    `json:"tenantId"`
+	Name              string    `json:"name"`
+	Slug              string    `json:"slug"`
+	Description       string    `json:"description,omitempty"`
+	RateLimitPolicyID string    `json:"rateLimitPolicyId,omitempty"`
+	QuotaPolicyID     string    `json:"quotaPolicyId,omitempty"`
+	Status            string    `json:"status"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
+type RateLimitPolicy struct {
+	ID            string    `json:"id"`
+	TenantID      string    `json:"tenantId"`
+	Name          string    `json:"name"`
+	Scope         string    `json:"scope"`
+	LimitCount    int       `json:"limitCount"`
+	WindowSeconds int       `json:"windowSeconds"`
+	BurstCount    int       `json:"burstCount"`
+	Algorithm     string    `json:"algorithm,omitempty"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+type QuotaPolicy struct {
+	ID               string    `json:"id"`
+	TenantID         string    `json:"tenantId"`
+	Name             string    `json:"name"`
+	Scope            string    `json:"scope"`
+	Period           string    `json:"period"`
+	QuotaCount       int64     `json:"quotaCount"`
+	ExceededBehavior string    `json:"exceededBehavior"`
+	Status           string    `json:"status"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 type Upstream struct {

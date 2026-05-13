@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"syra-backend/internal/auth"
+	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/runtimeconfig"
 	"syra-backend/internal/gateway/upstream"
@@ -46,6 +47,18 @@ func (s *RuntimeConfigSource) Load(ctx context.Context) (runtimeconfig.Snapshot,
 	if err != nil {
 		return runtimeconfig.Snapshot{}, err
 	}
+	products, err := s.loadActiveProducts(ctx, tenantSet)
+	if err != nil {
+		return runtimeconfig.Snapshot{}, err
+	}
+	rateLimits, rateLimitSet, err := s.loadActiveRateLimits(ctx, tenantSet)
+	if err != nil {
+		return runtimeconfig.Snapshot{}, err
+	}
+	quotas, quotaSet, err := s.loadActiveQuotas(ctx, tenantSet)
+	if err != nil {
+		return runtimeconfig.Snapshot{}, err
+	}
 	upstreams, err := s.loadActiveUpstreams(ctx, tenantSet)
 	if err != nil {
 		return runtimeconfig.Snapshot{}, err
@@ -58,7 +71,7 @@ func (s *RuntimeConfigSource) Load(ctx context.Context) (runtimeconfig.Snapshot,
 	if err != nil {
 		return runtimeconfig.Snapshot{}, err
 	}
-	routes, err := s.loadActiveRoutes(ctx, tenantSet, productSet, upstreamSet, templateSet)
+	routes, err := s.loadActiveRoutes(ctx, tenantSet, productSet, upstreamSet, templateSet, rateLimitSet, quotaSet)
 	if err != nil {
 		return runtimeconfig.Snapshot{}, err
 	}
@@ -72,10 +85,13 @@ func (s *RuntimeConfigSource) Load(ctx context.Context) (runtimeconfig.Snapshot,
 		Status:      "active",
 		PublishedAt: publishedAt,
 		Routes:      routes,
+		APIProducts: products,
 		Upstreams:   upstreams,
 		Credentials: credentials,
 		Templates:   templates,
 		Profiles:    []iso8583.Profile{},
+		RateLimits:  rateLimits,
+		Quotas:      quotas,
 	}, nil
 }
 
@@ -203,11 +219,11 @@ func (s *RuntimeConfigSource) loadPublishedTemplates(ctx context.Context, tenant
 	return items, templateSet, rows.Err()
 }
 
-func (s *RuntimeConfigSource) loadActiveRoutes(ctx context.Context, tenantSet map[string]struct{}, productSet map[string]struct{}, upstreamSet map[string]struct{}, templateSet map[string]struct{}) ([]route.Route, error) {
+func (s *RuntimeConfigSource) loadActiveRoutes(ctx context.Context, tenantSet map[string]struct{}, productSet map[string]struct{}, upstreamSet map[string]struct{}, templateSet map[string]struct{}, rateLimitSet map[string]struct{}, quotaSet map[string]struct{}) ([]route.Route, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT tenant_id::text, id::text, api_product_id::text, inbound_protocol, outbound_protocol,
 			COALESCE(host, ''), COALESCE(method, ''), COALESCE(path, ''), upstream_id::text,
-			COALESCE(transformation_template_id::text, ''), timeout_ms, required_scopes,
+			COALESCE(transformation_template_id::text, ''), COALESCE(rate_limit_policy_id::text, ''), COALESCE(quota_policy_id::text, ''), timeout_ms, required_scopes,
 			hmac_enabled, COALESCE(hmac_secret, ''), replay_window_sec, idempotency_enabled, idempotency_ttl_sec
 		FROM routes
 		WHERE status = 'active' AND deleted_at IS NULL
@@ -219,7 +235,7 @@ func (s *RuntimeConfigSource) loadActiveRoutes(ctx context.Context, tenantSet ma
 	var routes []route.Route
 	for rows.Next() {
 		var item route.Route
-		if err := rows.Scan(&item.TenantID, &item.ID, &item.APIProductID, &item.InboundProtocol, &item.OutboundProtocol, &item.Host, &item.Method, &item.Path, &item.UpstreamRef, &item.TemplateRef, &item.TimeoutMs, &item.RequiredScopes, &item.HMACEnabled, &item.HMACSecret, &item.ReplayWindowSec, &item.IdempotencyEnabled, &item.IdempotencyTTLSec); err != nil {
+		if err := rows.Scan(&item.TenantID, &item.ID, &item.APIProductID, &item.InboundProtocol, &item.OutboundProtocol, &item.Host, &item.Method, &item.Path, &item.UpstreamRef, &item.TemplateRef, &item.RateLimitPolicyID, &item.QuotaPolicyID, &item.TimeoutMs, &item.RequiredScopes, &item.HMACEnabled, &item.HMACSecret, &item.ReplayWindowSec, &item.IdempotencyEnabled, &item.IdempotencyTTLSec); err != nil {
 			return nil, err
 		}
 		if _, ok := tenantSet[item.TenantID]; !ok {
@@ -236,11 +252,97 @@ func (s *RuntimeConfigSource) loadActiveRoutes(ctx context.Context, tenantSet ma
 				return nil, fmt.Errorf("active route %s references non-published template %s", item.ID, item.TemplateRef)
 			}
 		}
+		if item.RateLimitPolicyID != "" {
+			if _, ok := rateLimitSet[item.TenantID+"/"+item.RateLimitPolicyID]; !ok {
+				return nil, fmt.Errorf("active route %s references non-active rate limit policy %s", item.ID, item.RateLimitPolicyID)
+			}
+		}
+		if item.QuotaPolicyID != "" {
+			if _, ok := quotaSet[item.TenantID+"/"+item.QuotaPolicyID]; !ok {
+				return nil, fmt.Errorf("active route %s references non-active quota policy %s", item.ID, item.QuotaPolicyID)
+			}
+		}
 		item.Status = route.StatusActive
 		item.Method = strings.ToUpper(item.Method)
 		routes = append(routes, item)
 	}
 	return routes, rows.Err()
+}
+
+func (s *RuntimeConfigSource) loadActiveProducts(ctx context.Context, tenantSet map[string]struct{}) ([]policy.APIProductBinding, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tenant_id::text, id::text, COALESCE(rate_limit_policy_id::text, ''), COALESCE(quota_policy_id::text, '')
+		FROM api_products
+		WHERE status = 'active' AND deleted_at IS NULL
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []policy.APIProductBinding
+	for rows.Next() {
+		var item policy.APIProductBinding
+		if err := rows.Scan(&item.TenantID, &item.ID, &item.RateLimitPolicyID, &item.QuotaPolicyID); err != nil {
+			return nil, err
+		}
+		if _, ok := tenantSet[item.TenantID]; !ok {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *RuntimeConfigSource) loadActiveRateLimits(ctx context.Context, tenantSet map[string]struct{}) ([]policy.RateLimitConfig, map[string]struct{}, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tenant_id::text, id::text, scope, limit_count, window_seconds, burst_count, algorithm, status
+		FROM rate_limit_policies
+		WHERE status = 'active' AND deleted_at IS NULL
+	`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var items []policy.RateLimitConfig
+	set := map[string]struct{}{}
+	for rows.Next() {
+		var item policy.RateLimitConfig
+		if err := rows.Scan(&item.TenantID, &item.ID, &item.Scope, &item.LimitCount, &item.WindowSeconds, &item.BurstCount, &item.Algorithm, &item.Status); err != nil {
+			return nil, nil, err
+		}
+		if _, ok := tenantSet[item.TenantID]; !ok {
+			continue
+		}
+		items = append(items, item)
+		set[item.TenantID+"/"+item.ID] = struct{}{}
+	}
+	return items, set, rows.Err()
+}
+
+func (s *RuntimeConfigSource) loadActiveQuotas(ctx context.Context, tenantSet map[string]struct{}) ([]policy.QuotaConfig, map[string]struct{}, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tenant_id::text, id::text, scope, period, quota_count, exceeded_behavior, status
+		FROM quota_policies
+		WHERE status = 'active' AND deleted_at IS NULL
+	`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var items []policy.QuotaConfig
+	set := map[string]struct{}{}
+	for rows.Next() {
+		var item policy.QuotaConfig
+		if err := rows.Scan(&item.TenantID, &item.ID, &item.Scope, &item.Period, &item.QuotaCount, &item.ExceededBehavior, &item.Status); err != nil {
+			return nil, nil, err
+		}
+		if _, ok := tenantSet[item.TenantID]; !ok {
+			continue
+		}
+		items = append(items, item)
+		set[item.TenantID+"/"+item.ID] = struct{}{}
+	}
+	return items, set, rows.Err()
 }
 
 func (s *RuntimeConfigSource) loadActiveCredentials(ctx context.Context, tenantSet map[string]struct{}) ([]auth.APIKeyCredential, error) {

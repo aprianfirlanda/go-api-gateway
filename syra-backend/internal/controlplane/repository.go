@@ -23,6 +23,16 @@ type Repository interface {
 	GetAPIProduct(ctx context.Context, tenantID, id string) (APIProduct, error)
 	UpdateAPIProduct(ctx context.Context, product APIProduct) error
 
+	CreateRateLimitPolicy(ctx context.Context, policy RateLimitPolicy) error
+	ListRateLimitPolicies(ctx context.Context, tenantID string) ([]RateLimitPolicy, error)
+	GetRateLimitPolicy(ctx context.Context, tenantID, id string) (RateLimitPolicy, error)
+	UpdateRateLimitPolicy(ctx context.Context, policy RateLimitPolicy) error
+
+	CreateQuotaPolicy(ctx context.Context, policy QuotaPolicy) error
+	ListQuotaPolicies(ctx context.Context, tenantID string) ([]QuotaPolicy, error)
+	GetQuotaPolicy(ctx context.Context, tenantID, id string) (QuotaPolicy, error)
+	UpdateQuotaPolicy(ctx context.Context, policy QuotaPolicy) error
+
 	CreateUpstream(ctx context.Context, upstream Upstream) error
 	ListUpstreams(ctx context.Context, tenantID string) ([]Upstream, error)
 	GetUpstream(ctx context.Context, tenantID, id string) (Upstream, error)
