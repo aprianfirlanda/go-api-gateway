@@ -120,6 +120,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		UsageEventStore: usageEvents,
 		Metrics:         metrics,
 		BodyLimit:       cfg.RequestBodyLimit,
+		RuntimeState:    runtimeStateStore,
 	})
 
 	return &App{

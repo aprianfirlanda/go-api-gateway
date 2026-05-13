@@ -1,12 +1,18 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"syra-backend/internal/auth"
@@ -18,36 +24,39 @@ import (
 	"syra-backend/internal/protocol"
 	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
+	"syra-backend/internal/runtime/state"
 	"syra-backend/internal/transform"
 	"syra-backend/pkg/ids"
 )
 
 type GatewayHandler struct {
-	routes      route.Registry
-	upstreams   upstream.Store
-	adapters    *protocol.Registry
-	templates   transform.Store
-	transforms  *transform.Engine
-	policies    *policy.Pipeline
-	usageEvents billing.UsageEventStore
-	metrics     *observability.Metrics
-	logger      *slog.Logger
+	routes       route.Registry
+	upstreams    upstream.Store
+	adapters     *protocol.Registry
+	templates    transform.Store
+	transforms   *transform.Engine
+	policies     *policy.Pipeline
+	runtimeState state.Store
+	usageEvents  billing.UsageEventStore
+	metrics      *observability.Metrics
+	logger       *slog.Logger
 }
 
-func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine, policies *policy.Pipeline, usageEvents billing.UsageEventStore, metrics *observability.Metrics, logger *slog.Logger) *GatewayHandler {
+func NewGatewayHandler(routes route.Registry, upstreams upstream.Store, adapters *protocol.Registry, templates transform.Store, transforms *transform.Engine, policies *policy.Pipeline, usageEvents billing.UsageEventStore, metrics *observability.Metrics, runtimeState state.Store, logger *slog.Logger) *GatewayHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &GatewayHandler{
-		routes:      routes,
-		upstreams:   upstreams,
-		adapters:    adapters,
-		templates:   templates,
-		transforms:  transforms,
-		policies:    policies,
-		usageEvents: usageEvents,
-		metrics:     metrics,
-		logger:      logger,
+		routes:       routes,
+		upstreams:    upstreams,
+		adapters:     adapters,
+		templates:    templates,
+		transforms:   transforms,
+		policies:     policies,
+		runtimeState: runtimeState,
+		usageEvents:  usageEvents,
+		metrics:      metrics,
+		logger:       logger,
 	}
 }
 
@@ -94,6 +103,24 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	usageEvent.APIProductID = matchedRoute.APIProductID
 	usageEvent.RouteID = matchedRoute.ID
+	if err := h.enforceScopes(matchedRoute, principal); err != nil {
+		writeAttemptError(http.StatusForbidden, "forbidden", "Missing required scope", billing.StatusRejected)
+		return
+	}
+	ctx := r.Context()
+	bodyBytes, err := readRequestBody(r)
+	if err != nil {
+		writeAttemptError(http.StatusBadRequest, "invalid_request", "Invalid request body", billing.StatusRejected)
+		return
+	}
+	if err := h.enforceHMAC(ctx, r, matchedRoute, principal, bodyBytes); err != nil {
+		writeAttemptError(http.StatusForbidden, "forbidden", "Invalid request signature", billing.StatusRejected)
+		return
+	}
+	if err := h.enforceIdempotency(ctx, r, matchedRoute, principal, bodyBytes); err != nil {
+		writeAttemptError(http.StatusConflict, "idempotency_conflict", err.Error(), billing.StatusRejected)
+		return
+	}
 
 	sourceProtocol := protocolName(matchedRoute.InboundProtocol, restprotocol.Name)
 	usageEvent.SourceProtocol = sourceProtocol
@@ -144,7 +171,6 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
 	cancel := func() {}
 	if matchedRoute.TimeoutMs > 0 {
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(matchedRoute.TimeoutMs)*time.Millisecond)
@@ -248,6 +274,136 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		usageEvent.Status = billing.StatusSuccess
 	}
 	writeOutboundResponse(w, outbound)
+}
+
+func (h *GatewayHandler) enforceScopes(r route.Route, principal auth.Principal) error {
+	if len(r.RequiredScopes) == 0 {
+		return nil
+	}
+	granted := map[string]struct{}{}
+	for _, scope := range principal.Scopes {
+		granted[scope] = struct{}{}
+	}
+	for _, required := range r.RequiredScopes {
+		if _, ok := granted[required]; !ok {
+			return fmt.Errorf("missing scope %s", required)
+		}
+	}
+	return nil
+}
+
+func (h *GatewayHandler) enforceHMAC(ctx context.Context, req *http.Request, r route.Route, principal auth.Principal, body []byte) error {
+	if !r.HMACEnabled {
+		return nil
+	}
+	signatureHeader := strings.TrimSpace(req.Header.Get("X-Signature"))
+	timestampHeader := strings.TrimSpace(req.Header.Get("X-Timestamp"))
+	nonce := strings.TrimSpace(req.Header.Get("X-Nonce"))
+	if signatureHeader == "" || timestampHeader == "" || nonce == "" || r.HMACSecret == "" {
+		return fmt.Errorf("missing signature headers")
+	}
+	timestamp, err := time.Parse(time.RFC3339, timestampHeader)
+	if err != nil {
+		return err
+	}
+	window := time.Duration(r.ReplayWindowSec) * time.Second
+	if window <= 0 {
+		window = 5 * time.Minute
+	}
+	now := time.Now().UTC()
+	if now.Sub(timestamp) > window || timestamp.Sub(now) > window {
+		return fmt.Errorf("stale timestamp")
+	}
+	hash := sha256.Sum256(body)
+	bodyHash := hex.EncodeToString(hash[:])
+	canonical := strings.Join([]string{
+		req.Method,
+		req.URL.Path,
+		req.URL.RawQuery,
+		timestampHeader,
+		nonce,
+		bodyHash,
+	}, "\n")
+	mac := hmac.New(sha256.New, []byte(r.HMACSecret))
+	_, _ = mac.Write([]byte(canonical))
+	expected := "hmac-sha256=" + hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(expected), []byte(signatureHeader)) {
+		return fmt.Errorf("invalid signature")
+	}
+	if h.runtimeState != nil {
+		nonceKey := state.Key{
+			TenantID: principal.TenantID,
+			Feature:  "replay_nonce",
+			Name:     principal.ConsumerID + ":" + principal.CredentialID + ":" + nonce,
+		}
+		ok, err := h.runtimeState.CompareAndSet(ctx, nonceKey, "", "1", window)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("replayed nonce")
+		}
+	}
+	return nil
+}
+
+func (h *GatewayHandler) enforceIdempotency(ctx context.Context, req *http.Request, r route.Route, principal auth.Principal, body []byte) error {
+	if !r.IdempotencyEnabled {
+		return nil
+	}
+	switch req.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	default:
+		return nil
+	}
+	key := strings.TrimSpace(req.Header.Get("Idempotency-Key"))
+	if key == "" {
+		return fmt.Errorf("missing idempotency key")
+	}
+	if h.runtimeState == nil {
+		return nil
+	}
+	requestHash := sha256.Sum256(append([]byte(req.Method+":"+req.URL.Path+"?"+req.URL.RawQuery+":"), body...))
+	hashValue := hex.EncodeToString(requestHash[:])
+	ttl := time.Duration(r.IdempotencyTTLSec) * time.Second
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	stateKey := state.Key{
+		TenantID: principal.TenantID,
+		Feature:  "idempotency",
+		Name:     r.ID + ":" + principal.ConsumerID + ":" + key,
+	}
+	ok, err := h.runtimeState.CompareAndSet(ctx, stateKey, "", hashValue, ttl)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	existing, found, err := h.runtimeState.Get(ctx, stateKey)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("idempotency conflict")
+	}
+	if existing == hashValue {
+		return fmt.Errorf("duplicate idempotency key")
+	}
+	return fmt.Errorf("idempotency key reused with different request")
+}
+
+func readRequestBody(req *http.Request) ([]byte, error) {
+	if req.Body == nil {
+		return nil, nil
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
 }
 
 func (h *GatewayHandler) emitUsageEvent(ctx context.Context, event billing.UsageEvent, start time.Time, upstreamCalled bool) {

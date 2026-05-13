@@ -2,7 +2,10 @@ package httpserver
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"net"
@@ -17,6 +20,7 @@ import (
 
 	"syra-backend/internal/auth"
 	"syra-backend/internal/billing"
+	"syra-backend/internal/controlplane"
 	"syra-backend/internal/gateway/policy"
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/upstream"
@@ -26,6 +30,7 @@ import (
 	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
 	"syra-backend/internal/protocol/soapxml"
+	"syra-backend/internal/runtime/state"
 	"syra-backend/internal/transform"
 )
 
@@ -83,6 +88,40 @@ func TestGatewayRouteRejectsSuspendedCredential(t *testing.T) {
 	require.JSONEq(t, `{"error":{"code":"forbidden","message":"Credential is not allowed"}}`, rec.Body.String())
 }
 
+func TestGatewayRouteRejectsDisabledTenantCredential(t *testing.T) {
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		tenantStatus: controlplane.StatusDisabled,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestGatewayRouteRejectsDisabledConsumerCredential(t *testing.T) {
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		consumerStatus: controlplane.StatusDisabled,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestGatewayRouteRejectsExpiredCredential(t *testing.T) {
+	expired := time.Now().UTC().Add(-time.Minute)
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		credentialExpiresAt: &expired,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
 func TestGatewayRouteProxiesAuthenticatedRequestToUpstream(t *testing.T) {
 	var upstreamMethod string
 	var upstreamPath string
@@ -133,6 +172,140 @@ func TestGatewayRouteProxiesAuthenticatedRequestToUpstream(t *testing.T) {
 	require.Empty(t, upstreamAuthHeader)
 	require.Empty(t, upstreamAPIKeyHeader)
 	require.Empty(t, upstreamConnectionHeader)
+}
+
+func TestGatewayRouteRejectsMissingScope(t *testing.T) {
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		credentialScopes: []string{"payments:read"},
+		route: route.Route{
+			ID:               "route_1",
+			TenantID:         "tenant_1",
+			APIProductID:     "product_1",
+			InboundProtocol:  restprotocol.Name,
+			OutboundProtocol: restprotocol.Name,
+			UpstreamRef:      "upstream_1",
+			Host:             "api.example.test",
+			Method:           http.MethodGet,
+			Path:             "/accounts",
+			RequiredScopes:   []string{"payments:write"},
+			Status:           route.StatusActive,
+		},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestGatewayRouteRejectsInvalidHMAC(t *testing.T) {
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		runtimeState: state.NewInMemoryStore(state.Namespacer{Environment: "test", Version: "v1"}),
+		route: route.Route{
+			ID:               "route_1",
+			TenantID:         "tenant_1",
+			APIProductID:     "product_1",
+			InboundProtocol:  restprotocol.Name,
+			OutboundProtocol: restprotocol.Name,
+			UpstreamRef:      "upstream_1",
+			Host:             "api.example.test",
+			Method:           http.MethodPost,
+			Path:             "/accounts",
+			HMACEnabled:      true,
+			HMACSecret:       "secret-key",
+			ReplayWindowSec:  300,
+			Status:           route.StatusActive,
+		},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://api.example.test/accounts", strings.NewReader(`{"amount":100}`))
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	req.Header.Set("X-Timestamp", time.Now().UTC().Format(time.RFC3339))
+	req.Header.Set("X-Nonce", "nonce-1")
+	req.Header.Set("X-Signature", "hmac-sha256=bad")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestGatewayRouteRejectsReplayedNonce(t *testing.T) {
+	stateStore := state.NewInMemoryStore(state.Namespacer{Environment: "test", Version: "v1"})
+	routeCfg := route.Route{
+		ID:               "route_1",
+		TenantID:         "tenant_1",
+		APIProductID:     "product_1",
+		InboundProtocol:  restprotocol.Name,
+		OutboundProtocol: restprotocol.Name,
+		UpstreamRef:      "upstream_1",
+		Host:             "api.example.test",
+		Method:           http.MethodPost,
+		Path:             "/accounts",
+		HMACEnabled:      true,
+		HMACSecret:       "secret-key",
+		ReplayWindowSec:  300,
+		Status:           route.StatusActive,
+	}
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	t.Cleanup(upstreamServer.Close)
+	router := newGatewayTestRouter(t, gatewayTestConfig{runtimeState: stateStore, route: routeCfg, upstreamBaseURL: upstreamServer.URL})
+	ts := time.Now().UTC().Format(time.RFC3339)
+	nonce := "nonce-1"
+	body := `{"amount":100}`
+	signature := signHMACRequest(t, "secret-key", http.MethodPost, "/accounts", "", ts, nonce, body)
+
+	req1 := httptest.NewRequest(http.MethodPost, "http://api.example.test/accounts", strings.NewReader(body))
+	req1.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	req1.Header.Set("X-Timestamp", ts)
+	req1.Header.Set("X-Nonce", nonce)
+	req1.Header.Set("X-Signature", signature)
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, req1)
+	require.Equal(t, http.StatusOK, rec1.Code)
+
+	req2 := httptest.NewRequest(http.MethodPost, "http://api.example.test/accounts", strings.NewReader(body))
+	req2.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	req2.Header.Set("X-Timestamp", ts)
+	req2.Header.Set("X-Nonce", nonce)
+	req2.Header.Set("X-Signature", signature)
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusForbidden, rec2.Code)
+}
+
+func TestGatewayRouteIdempotencyKeyConflict(t *testing.T) {
+	stateStore := state.NewInMemoryStore(state.Namespacer{Environment: "test", Version: "v1"})
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	t.Cleanup(upstreamServer.Close)
+	router := newGatewayTestRouter(t, gatewayTestConfig{
+		runtimeState:    stateStore,
+		upstreamBaseURL: upstreamServer.URL,
+		route: route.Route{
+			ID:                 "route_1",
+			TenantID:           "tenant_1",
+			APIProductID:       "product_1",
+			InboundProtocol:    restprotocol.Name,
+			OutboundProtocol:   restprotocol.Name,
+			UpstreamRef:        "upstream_1",
+			Host:               "api.example.test",
+			Method:             http.MethodPost,
+			Path:               "/accounts",
+			IdempotencyEnabled: true,
+			IdempotencyTTLSec:  300,
+			Status:             route.StatusActive,
+		},
+	})
+	req1 := httptest.NewRequest(http.MethodPost, "http://api.example.test/accounts", strings.NewReader(`{"amount":100}`))
+	req1.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	req1.Header.Set("Idempotency-Key", "idem-1")
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, req1)
+	require.Equal(t, http.StatusOK, rec1.Code)
+
+	req2 := httptest.NewRequest(http.MethodPost, "http://api.example.test/accounts", strings.NewReader(`{"amount":200}`))
+	req2.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	req2.Header.Set("Idempotency-Key", "idem-1")
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusConflict, rec2.Code)
 }
 
 func TestGatewayRouteDoesNotCrossTenantMatch(t *testing.T) {
@@ -439,15 +612,21 @@ func TestGatewayRouteRejectsUnpublishedTransformationTemplate(t *testing.T) {
 }
 
 type gatewayTestConfig struct {
-	credentialStatus   string
-	credentialTenantID string
-	consumerID         string
-	credentialID       string
-	keyPrefix          string
-	upstreamBaseURL    string
-	timeoutMs          int
-	policies           *policy.Pipeline
-	usageEvents        billing.UsageEventStore
+	credentialStatus    string
+	credentialTenantID  string
+	consumerID          string
+	credentialID        string
+	keyPrefix           string
+	credentialScopes    []string
+	credentialExpiresAt *time.Time
+	tenantStatus        string
+	consumerStatus      string
+	upstreamBaseURL     string
+	timeoutMs           int
+	policies            *policy.Pipeline
+	usageEvents         billing.UsageEventStore
+	route               route.Route
+	runtimeState        state.Store
 }
 
 func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
@@ -471,6 +650,27 @@ func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
 	if cfg.upstreamBaseURL == "" {
 		cfg.upstreamBaseURL = "http://upstream.example.test"
 	}
+	if cfg.tenantStatus == "" {
+		cfg.tenantStatus = auth.StatusActive
+	}
+	if cfg.consumerStatus == "" {
+		cfg.consumerStatus = auth.StatusActive
+	}
+	if cfg.route.ID == "" {
+		cfg.route = route.Route{
+			ID:               "route_1",
+			TenantID:         "tenant_1",
+			APIProductID:     "product_1",
+			InboundProtocol:  restprotocol.Name,
+			OutboundProtocol: restprotocol.Name,
+			UpstreamRef:      "upstream_1",
+			Host:             "api.example.test",
+			Method:           http.MethodGet,
+			Path:             "/accounts",
+			TimeoutMs:        cfg.timeoutMs,
+			Status:           route.StatusActive,
+		}
+	}
 
 	secretHash, err := auth.HashSecretWithParams("secret", auth.HashParams{
 		Memory:      32,
@@ -485,26 +685,18 @@ func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
 		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
 		HealthService: health.NewService(nil),
 		CredentialStore: auth.NewInMemoryCredentialStore(auth.APIKeyCredential{
-			ID:         cfg.credentialID,
-			TenantID:   cfg.credentialTenantID,
-			ConsumerID: cfg.consumerID,
-			KeyPrefix:  cfg.keyPrefix,
-			SecretHash: secretHash,
-			Status:     cfg.credentialStatus,
+			ID:             cfg.credentialID,
+			TenantID:       cfg.credentialTenantID,
+			ConsumerID:     cfg.consumerID,
+			KeyPrefix:      cfg.keyPrefix,
+			SecretHash:     secretHash,
+			Status:         cfg.credentialStatus,
+			Scopes:         cfg.credentialScopes,
+			ExpiresAt:      cfg.credentialExpiresAt,
+			TenantStatus:   cfg.tenantStatus,
+			ConsumerStatus: cfg.consumerStatus,
 		}),
-		RouteRegistry: route.NewInMemoryRegistry(route.Route{
-			ID:               "route_1",
-			TenantID:         "tenant_1",
-			APIProductID:     "product_1",
-			InboundProtocol:  restprotocol.Name,
-			OutboundProtocol: restprotocol.Name,
-			UpstreamRef:      "upstream_1",
-			Host:             "api.example.test",
-			Method:           http.MethodGet,
-			Path:             "/accounts",
-			TimeoutMs:        cfg.timeoutMs,
-			Status:           route.StatusActive,
-		}),
+		RouteRegistry: route.NewInMemoryRegistry(cfg.route),
 		UpstreamStore: upstream.NewInMemoryStore(upstream.Upstream{
 			ID:       "upstream_1",
 			TenantID: "tenant_1",
@@ -514,6 +706,7 @@ func newGatewayTestRouter(t *testing.T, cfg gatewayTestConfig) http.Handler {
 		AdapterRegistry: newTestAdapterRegistry(t),
 		PolicyPipeline:  cfg.policies,
 		UsageEventStore: cfg.usageEvents,
+		RuntimeState:    cfg.runtimeState,
 	})
 }
 
@@ -850,6 +1043,23 @@ func gatewayISOTransformTemplate() transform.Template {
 			},
 		},
 	}
+}
+
+func signHMACRequest(t *testing.T, secret, method, path, query, timestamp, nonce, body string) string {
+	t.Helper()
+	bodyHash := sha256.Sum256([]byte(body))
+	canonical := strings.Join([]string{
+		method,
+		path,
+		query,
+		timestamp,
+		nonce,
+		hex.EncodeToString(bodyHash[:]),
+	}, "\n")
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, err := mac.Write([]byte(canonical))
+	require.NoError(t, err)
+	return "hmac-sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 func gatewaySOAPTransformTemplate() transform.Template {

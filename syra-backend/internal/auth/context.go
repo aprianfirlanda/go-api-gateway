@@ -8,6 +8,7 @@ type Principal struct {
 	TenantID     string
 	ConsumerID   string
 	CredentialID string
+	Scopes       []string
 }
 
 func ContextWithPrincipal(ctx context.Context, principal Principal) context.Context {

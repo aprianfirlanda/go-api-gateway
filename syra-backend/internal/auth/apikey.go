@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -27,12 +28,16 @@ var (
 )
 
 type APIKeyCredential struct {
-	ID         string
-	TenantID   string
-	ConsumerID string
-	KeyPrefix  string
-	SecretHash string
-	Status     string
+	ID             string
+	TenantID       string
+	ConsumerID     string
+	KeyPrefix      string
+	SecretHash     string
+	Status         string
+	TenantStatus   string
+	ConsumerStatus string
+	Scopes         []string
+	ExpiresAt      *time.Time
 }
 
 type CredentialStore interface {
@@ -157,6 +162,15 @@ func AuthenticateAPIKey(ctx context.Context, store CredentialStore, rawKey strin
 	default:
 		return Principal{}, ErrCredentialForbidden
 	}
+	if credential.TenantStatus != "" && credential.TenantStatus != StatusActive {
+		return Principal{}, ErrCredentialForbidden
+	}
+	if credential.ConsumerStatus != "" && credential.ConsumerStatus != StatusActive {
+		return Principal{}, ErrCredentialForbidden
+	}
+	if credential.ExpiresAt != nil && time.Now().UTC().After(*credential.ExpiresAt) {
+		return Principal{}, ErrCredentialForbidden
+	}
 
 	ok, err := VerifySecret(secret, credential.SecretHash)
 	if err != nil {
@@ -170,6 +184,7 @@ func AuthenticateAPIKey(ctx context.Context, store CredentialStore, rawKey strin
 		TenantID:     credential.TenantID,
 		ConsumerID:   credential.ConsumerID,
 		CredentialID: credential.ID,
+		Scopes:       append([]string(nil), credential.Scopes...),
 	}, nil
 }
 

@@ -207,7 +207,8 @@ func (s *RuntimeConfigSource) loadActiveRoutes(ctx context.Context, tenantSet ma
 	rows, err := s.pool.Query(ctx, `
 		SELECT tenant_id::text, id::text, api_product_id::text, inbound_protocol, outbound_protocol,
 			COALESCE(host, ''), COALESCE(method, ''), COALESCE(path, ''), upstream_id::text,
-			COALESCE(transformation_template_id::text, ''), timeout_ms
+			COALESCE(transformation_template_id::text, ''), timeout_ms, required_scopes,
+			hmac_enabled, COALESCE(hmac_secret, ''), replay_window_sec, idempotency_enabled, idempotency_ttl_sec
 		FROM routes
 		WHERE status = 'active' AND deleted_at IS NULL
 	`)
@@ -218,7 +219,7 @@ func (s *RuntimeConfigSource) loadActiveRoutes(ctx context.Context, tenantSet ma
 	var routes []route.Route
 	for rows.Next() {
 		var item route.Route
-		if err := rows.Scan(&item.TenantID, &item.ID, &item.APIProductID, &item.InboundProtocol, &item.OutboundProtocol, &item.Host, &item.Method, &item.Path, &item.UpstreamRef, &item.TemplateRef, &item.TimeoutMs); err != nil {
+		if err := rows.Scan(&item.TenantID, &item.ID, &item.APIProductID, &item.InboundProtocol, &item.OutboundProtocol, &item.Host, &item.Method, &item.Path, &item.UpstreamRef, &item.TemplateRef, &item.TimeoutMs, &item.RequiredScopes, &item.HMACEnabled, &item.HMACSecret, &item.ReplayWindowSec, &item.IdempotencyEnabled, &item.IdempotencyTTLSec); err != nil {
 			return nil, err
 		}
 		if _, ok := tenantSet[item.TenantID]; !ok {
@@ -244,9 +245,11 @@ func (s *RuntimeConfigSource) loadActiveRoutes(ctx context.Context, tenantSet ma
 
 func (s *RuntimeConfigSource) loadActiveCredentials(ctx context.Context, tenantSet map[string]struct{}) ([]auth.APIKeyCredential, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT tenant_id::text, id::text, consumer_id::text, COALESCE(key_prefix, ''), COALESCE(secret_hash, '')
-		FROM credentials
-		WHERE status = 'active'
+		SELECT c.tenant_id::text, c.id::text, c.consumer_id::text, COALESCE(c.key_prefix, ''), COALESCE(c.secret_hash, ''), c.status,
+			COALESCE(t.status, ''), COALESCE(cons.status, ''), c.scopes, c.expires_at
+		FROM credentials c
+		LEFT JOIN tenants t ON t.id = c.tenant_id
+		LEFT JOIN consumers cons ON cons.id = c.consumer_id
 	`)
 	if err != nil {
 		return nil, err
@@ -254,11 +257,11 @@ func (s *RuntimeConfigSource) loadActiveCredentials(ctx context.Context, tenantS
 	defer rows.Close()
 	var credentials []auth.APIKeyCredential
 	for rows.Next() {
-		item := auth.APIKeyCredential{Status: auth.StatusActive}
-		if err := rows.Scan(&item.TenantID, &item.ID, &item.ConsumerID, &item.KeyPrefix, &item.SecretHash); err != nil {
+		item := auth.APIKeyCredential{}
+		if err := rows.Scan(&item.TenantID, &item.ID, &item.ConsumerID, &item.KeyPrefix, &item.SecretHash, &item.Status, &item.TenantStatus, &item.ConsumerStatus, &item.Scopes, &item.ExpiresAt); err != nil {
 			return nil, err
 		}
-		if _, ok := tenantSet[item.TenantID]; !ok {
+		if _, ok := tenantSet[item.TenantID]; !ok && item.TenantStatus == "" {
 			continue
 		}
 		credentials = append(credentials, item)

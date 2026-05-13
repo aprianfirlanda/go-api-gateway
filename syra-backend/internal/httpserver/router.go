@@ -16,6 +16,7 @@ import (
 	"syra-backend/internal/ports/input"
 	"syra-backend/internal/protocol"
 	restprotocol "syra-backend/internal/protocol/rest"
+	"syra-backend/internal/runtime/state"
 	"syra-backend/internal/transform"
 )
 
@@ -32,6 +33,7 @@ type Dependencies struct {
 	UsageEventStore billing.UsageEventStore
 	Metrics         *observability.Metrics
 	BodyLimit       int64
+	RuntimeState    state.Store
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -66,7 +68,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		if transformEngine == nil {
 			transformEngine = transform.NewEngine()
 		}
-		gatewayHandler := NewGatewayHandler(deps.RouteRegistry, deps.UpstreamStore, adapterRegistry, deps.TemplateStore, transformEngine, deps.PolicyPipeline, deps.UsageEventStore, deps.Metrics, deps.Logger)
+		gatewayHandler := NewGatewayHandler(deps.RouteRegistry, deps.UpstreamStore, adapterRegistry, deps.TemplateStore, transformEngine, deps.PolicyPipeline, deps.UsageEventStore, deps.Metrics, deps.RuntimeState, deps.Logger)
 		r.Group(func(protected chi.Router) {
 			protected.Use(APIKeyAuth(deps.CredentialStore, deps.UsageEventStore, deps.Metrics))
 			protected.Handle("/*", gatewayHandler)

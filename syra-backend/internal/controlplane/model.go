@@ -63,6 +63,12 @@ type Route struct {
 	QuotaPolicyID            string    `json:"quotaPolicyId,omitempty"`
 	Priority                 int       `json:"priority"`
 	TimeoutMs                int       `json:"timeoutMs"`
+	RequiredScopes           []string  `json:"requiredScopes,omitempty"`
+	HMACEnabled              bool      `json:"hmacEnabled,omitempty"`
+	HMACSecret               string    `json:"hmacSecret,omitempty"`
+	ReplayWindowSec          int       `json:"replayWindowSec,omitempty"`
+	IdempotencyEnabled       bool      `json:"idempotencyEnabled,omitempty"`
+	IdempotencyTTLSec        int       `json:"idempotencyTtlSec,omitempty"`
 	Status                   string    `json:"status"`
 	CreatedAt                time.Time `json:"createdAt"`
 	UpdatedAt                time.Time `json:"updatedAt"`

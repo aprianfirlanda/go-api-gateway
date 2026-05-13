@@ -189,10 +189,11 @@ func (r *ControlPlaneRepository) CreateRoute(ctx context.Context, route controlp
 		INSERT INTO routes (
 			id, tenant_id, api_product_id, name, inbound_protocol, outbound_protocol, host, method, path,
 			upstream_id, transformation_template_id, rate_limit_policy_id, quota_policy_id, priority, timeout_ms,
+			required_scopes, hmac_enabled, hmac_secret, replay_window_sec, idempotency_enabled, idempotency_ttl_sec,
 			status, created_at, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-	`, route.ID, route.TenantID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, route.Status, route.CreatedAt, route.UpdatedAt)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+	`, route.ID, route.TenantID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, route.RequiredScopes, route.HMACEnabled, nullableString(route.HMACSecret), route.ReplayWindowSec, route.IdempotencyEnabled, route.IdempotencyTTLSec, route.Status, route.CreatedAt, route.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -222,9 +223,11 @@ func (r *ControlPlaneRepository) UpdateRoute(ctx context.Context, route controlp
 		UPDATE routes
 		SET api_product_id = $3, name = $4, inbound_protocol = $5, outbound_protocol = $6, host = $7, method = $8,
 			path = $9, upstream_id = $10, transformation_template_id = $11, rate_limit_policy_id = $12,
-			quota_policy_id = $13, priority = $14, timeout_ms = $15, status = $16, updated_at = $17
+			quota_policy_id = $13, priority = $14, timeout_ms = $15, required_scopes = $16, hmac_enabled = $17,
+			hmac_secret = $18, replay_window_sec = $19, idempotency_enabled = $20, idempotency_ttl_sec = $21,
+			status = $22, updated_at = $23
 		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
-	`, route.TenantID, route.ID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, route.Status, route.UpdatedAt)
+	`, route.TenantID, route.ID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, route.RequiredScopes, route.HMACEnabled, nullableString(route.HMACSecret), route.ReplayWindowSec, route.IdempotencyEnabled, route.IdempotencyTTLSec, route.Status, route.UpdatedAt)
 	if err := rowsAffected(tag, err); err != nil {
 		return err
 	}
@@ -281,10 +284,13 @@ func (r *ControlPlaneRepository) UpdateCredential(ctx context.Context, credentia
 func (r *ControlPlaneRepository) FindByPrefix(ctx context.Context, prefix string) (auth.APIKeyCredential, error) {
 	var credential auth.APIKeyCredential
 	err := r.db.QueryRow(ctx, `
-		SELECT id::text, tenant_id::text, consumer_id::text, COALESCE(key_prefix, ''), COALESCE(secret_hash, ''), status
-		FROM credentials
-		WHERE key_prefix = $1
-	`, prefix).Scan(&credential.ID, &credential.TenantID, &credential.ConsumerID, &credential.KeyPrefix, &credential.SecretHash, &credential.Status)
+		SELECT c.id::text, c.tenant_id::text, c.consumer_id::text, COALESCE(c.key_prefix, ''), COALESCE(c.secret_hash, ''), c.status,
+			COALESCE(t.status, ''), COALESCE(cons.status, ''), c.scopes, c.expires_at
+		FROM credentials c
+		LEFT JOIN tenants t ON t.id = c.tenant_id
+		LEFT JOIN consumers cons ON cons.id = c.consumer_id
+		WHERE c.key_prefix = $1
+	`, prefix).Scan(&credential.ID, &credential.TenantID, &credential.ConsumerID, &credential.KeyPrefix, &credential.SecretHash, &credential.Status, &credential.TenantStatus, &credential.ConsumerStatus, &credential.Scopes, &credential.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auth.APIKeyCredential{}, auth.ErrCredentialNotFound
 	}
@@ -366,7 +372,8 @@ func routeSelectSQL() string {
 		SELECT id::text, tenant_id::text, api_product_id::text, name, inbound_protocol, outbound_protocol,
 			COALESCE(host, ''), COALESCE(method, ''), COALESCE(path, ''), upstream_id::text,
 			COALESCE(transformation_template_id::text, ''), COALESCE(rate_limit_policy_id::text, ''),
-			COALESCE(quota_policy_id::text, ''), priority, timeout_ms, status, created_at, updated_at
+			COALESCE(quota_policy_id::text, ''), priority, timeout_ms, required_scopes, hmac_enabled,
+			COALESCE(hmac_secret, ''), replay_window_sec, idempotency_enabled, idempotency_ttl_sec, status, created_at, updated_at
 		FROM routes
 	`
 }
@@ -416,7 +423,8 @@ func scanRoute(row rowScanner) (controlplane.Route, error) {
 	if err := row.Scan(
 		&route.ID, &route.TenantID, &route.APIProductID, &route.Name, &route.InboundProtocol, &route.OutboundProtocol,
 		&route.Host, &route.Method, &route.Path, &route.UpstreamID, &route.TransformationTemplateID,
-		&route.RateLimitPolicyID, &route.QuotaPolicyID, &route.Priority, &route.TimeoutMs, &route.Status,
+		&route.RateLimitPolicyID, &route.QuotaPolicyID, &route.Priority, &route.TimeoutMs, &route.RequiredScopes,
+		&route.HMACEnabled, &route.HMACSecret, &route.ReplayWindowSec, &route.IdempotencyEnabled, &route.IdempotencyTTLSec, &route.Status,
 		&route.CreatedAt, &route.UpdatedAt,
 	); err != nil {
 		return controlplane.Route{}, mapNotFound(err)

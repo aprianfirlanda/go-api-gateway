@@ -359,6 +359,12 @@ func (h *Handler) createRoute(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "" {
 		req.Status = StatusDraft
 	}
+	if req.ReplayWindowSec == 0 {
+		req.ReplayWindowSec = 300
+	}
+	if req.IdempotencyTTLSec == 0 {
+		req.IdempotencyTTLSec = 86400
+	}
 	req.CreatedAt = now
 	req.UpdatedAt = now
 	if err := h.store.CreateRoute(r.Context(), req); err != nil {
@@ -482,6 +488,20 @@ func patchRoute(item *Route, req Route) {
 	}
 	if req.TimeoutMs != 0 {
 		item.TimeoutMs = req.TimeoutMs
+	}
+	if req.RequiredScopes != nil {
+		item.RequiredScopes = append([]string(nil), req.RequiredScopes...)
+	}
+	item.HMACEnabled = req.HMACEnabled || item.HMACEnabled
+	if req.HMACSecret != "" {
+		item.HMACSecret = req.HMACSecret
+	}
+	if req.ReplayWindowSec != 0 {
+		item.ReplayWindowSec = req.ReplayWindowSec
+	}
+	item.IdempotencyEnabled = req.IdempotencyEnabled || item.IdempotencyEnabled
+	if req.IdempotencyTTLSec != 0 {
+		item.IdempotencyTTLSec = req.IdempotencyTTLSec
 	}
 	if req.Status != "" {
 		item.Status = req.Status
