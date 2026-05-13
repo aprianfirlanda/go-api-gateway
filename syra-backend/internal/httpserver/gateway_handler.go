@@ -233,6 +233,13 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"soapOperation":    target.SOAPOperation,
 			"soapNamespace":    target.SOAPNamespace,
 			"soapResponsePath": target.SOAPResponsePath,
+			"graphqlPath":      target.GraphQLPath,
+			"graphqlOperation": target.GraphQLOperation,
+			"graphqlQuery":     target.GraphQLQuery,
+			"webhookPath":      target.WebhookPath,
+			"webhookMethod":    target.WebhookMethod,
+			"webhookSecret":    target.WebhookSecret,
+			"webhookEventType": target.WebhookEventType,
 		},
 	}, msg)
 	if err != nil {

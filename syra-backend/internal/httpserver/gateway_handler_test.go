@@ -27,9 +27,11 @@ import (
 	"syra-backend/internal/health"
 	"syra-backend/internal/observability"
 	"syra-backend/internal/protocol"
+	"syra-backend/internal/protocol/graphql"
 	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
 	"syra-backend/internal/protocol/soapxml"
+	"syra-backend/internal/protocol/webhook"
 	"syra-backend/internal/runtime/state"
 	"syra-backend/internal/transform"
 )
@@ -611,6 +613,138 @@ func TestGatewayRouteRejectsUnpublishedTransformationTemplate(t *testing.T) {
 	require.False(t, events[0].Billable)
 }
 
+func TestGatewayRouteTransformsRESTToGraphQLAndBackToREST(t *testing.T) {
+	usageEvents := billing.NewInMemoryUsageEventStore()
+	metrics := observability.NewMetrics()
+	var capturedBody string
+	var capturedPath string
+	graphqlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = string(body)
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"authorizationCode":"A12345","responseCode":"00"}}`))
+	}))
+	t.Cleanup(graphqlServer.Close)
+
+	router := NewRouter(Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
+		HealthService: health.NewService(nil),
+		CredentialStore: auth.NewInMemoryCredentialStore(mustCredential(t, auth.APIKeyCredential{
+			ID:         "credential_1",
+			TenantID:   "tenant_1",
+			ConsumerID: "consumer_1",
+			KeyPrefix:  "gw_live_tenant_1",
+			Status:     auth.StatusActive,
+		})),
+		RouteRegistry: route.NewInMemoryRegistry(route.Route{
+			ID:               "route_graphql",
+			TenantID:         "tenant_1",
+			APIProductID:     "product_1",
+			InboundProtocol:  restprotocol.Name,
+			OutboundProtocol: graphql.Name,
+			UpstreamRef:      "graphql_1",
+			Host:             "api.example.test",
+			Method:           http.MethodPost,
+			Path:             "/cards/authorization",
+			Status:           route.StatusActive,
+		}),
+		UpstreamStore: upstream.NewInMemoryStore(upstream.Upstream{
+			ID:               "graphql_1",
+			TenantID:         "tenant_1",
+			Protocol:         upstream.ProtocolGraphQL,
+			BaseURL:          graphqlServer.URL,
+			GraphQLPath:      "/graphql",
+			GraphQLOperation: "AuthorizeCard",
+			GraphQLQuery:     "mutation AuthorizeCard($pan: String!, $amount: Int!) { authorizeCard(pan: $pan, amount: $amount) { authorizationCode responseCode } }",
+		}),
+		AdapterRegistry: newTestAdapterRegistryWithAdvancedAdapters(t),
+		UsageEventStore: usageEvents,
+		Metrics:         metrics,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://api.example.test/cards/authorization", strings.NewReader(`{"pan":"4111111111111111","amount":10000}`))
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"data":{"authorizationCode":"A12345","responseCode":"00"}}`, rec.Body.String())
+	require.Equal(t, "/graphql", capturedPath)
+	require.Contains(t, capturedBody, `"operationName":"AuthorizeCard"`)
+	require.Contains(t, capturedBody, `"query":"mutation AuthorizeCard`)
+	events := listUsageEvents(t, usageEvents)
+	require.Len(t, events, 1)
+	require.Equal(t, graphql.Name, events[0].TargetProtocol)
+	require.Equal(t, billing.StatusSuccess, events[0].Status)
+}
+
+func TestGatewayRouteWebhookFailureEmitsUsageEventAndMetrics(t *testing.T) {
+	usageEvents := billing.NewInMemoryUsageEventStore()
+	metrics := observability.NewMetrics()
+	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	webhookServer.Close()
+
+	router := NewRouter(Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(discardWriter{}, nil)),
+		HealthService: health.NewService(nil),
+		CredentialStore: auth.NewInMemoryCredentialStore(mustCredential(t, auth.APIKeyCredential{
+			ID:         "credential_1",
+			TenantID:   "tenant_1",
+			ConsumerID: "consumer_1",
+			KeyPrefix:  "gw_live_tenant_1",
+			Status:     auth.StatusActive,
+		})),
+		RouteRegistry: route.NewInMemoryRegistry(route.Route{
+			ID:               "route_webhook",
+			TenantID:         "tenant_1",
+			APIProductID:     "product_1",
+			InboundProtocol:  restprotocol.Name,
+			OutboundProtocol: webhook.Name,
+			UpstreamRef:      "webhook_1",
+			Host:             "api.example.test",
+			Method:           http.MethodPost,
+			Path:             "/events",
+			Status:           route.StatusActive,
+		}),
+		UpstreamStore: upstream.NewInMemoryStore(upstream.Upstream{
+			ID:               "webhook_1",
+			TenantID:         "tenant_1",
+			Protocol:         upstream.ProtocolWebhook,
+			BaseURL:          webhookServer.URL,
+			WebhookPath:      "/deliver",
+			WebhookMethod:    http.MethodPost,
+			WebhookSecret:    "webhook-secret",
+			WebhookEventType: "payment.authorized",
+		}),
+		AdapterRegistry: newTestAdapterRegistryWithAdvancedAdapters(t),
+		UsageEventStore: usageEvents,
+		Metrics:         metrics,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://api.example.test/events", strings.NewReader(`{"id":"evt_1"}`))
+	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.JSONEq(t, `{"error":{"code":"upstream_error","message":"Upstream request failed"}}`, rec.Body.String())
+	events := listUsageEvents(t, usageEvents)
+	require.Len(t, events, 1)
+	require.Equal(t, webhook.Name, events[0].TargetProtocol)
+	require.Equal(t, billing.StatusFailed, events[0].Status)
+	require.True(t, events[0].Billable)
+
+	metricsRec := httptest.NewRecorder()
+	router.ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "http://api.example.test/metrics", nil))
+	require.Equal(t, http.StatusOK, metricsRec.Code)
+	require.Contains(t, metricsRec.Body.String(), `syra_gateway_protocol_adapter_errors_total{protocol="webhook",stage="upstream"} 1`)
+}
+
 type gatewayTestConfig struct {
 	credentialStatus    string
 	credentialTenantID  string
@@ -1077,6 +1211,14 @@ func newTestAdapterRegistryWithSOAP(t *testing.T) *protocol.Registry {
 
 	registry := newTestAdapterRegistry(t)
 	require.NoError(t, registry.RegisterUpstream(soapxml.NewAdapter(http.DefaultClient)))
+	return registry
+}
+
+func newTestAdapterRegistryWithAdvancedAdapters(t *testing.T) *protocol.Registry {
+	t.Helper()
+	registry := newTestAdapterRegistryWithSOAP(t)
+	require.NoError(t, registry.RegisterUpstream(graphql.NewAdapter(http.DefaultClient)))
+	require.NoError(t, registry.RegisterUpstream(webhook.NewAdapter(http.DefaultClient)))
 	return registry
 }
 

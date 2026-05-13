@@ -17,9 +17,11 @@ import (
 	"syra-backend/internal/gateway/route"
 	"syra-backend/internal/gateway/runtimeconfig"
 	"syra-backend/internal/gateway/upstream"
+	"syra-backend/internal/protocol/graphql"
 	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
 	"syra-backend/internal/protocol/soapxml"
+	"syra-backend/internal/protocol/webhook"
 	"syra-backend/internal/transform"
 )
 
@@ -262,6 +264,9 @@ func (s *RuntimeConfigSource) loadActiveRoutes(ctx context.Context, tenantSet ma
 				return nil, fmt.Errorf("active route %s references non-active quota policy %s", item.ID, item.QuotaPolicyID)
 			}
 		}
+		if err := validateRouteProtocols(item); err != nil {
+			return nil, fmt.Errorf("active route %s is invalid: %w", item.ID, err)
+		}
 		item.Status = route.StatusActive
 		item.Method = strings.ToUpper(item.Method)
 		routes = append(routes, item)
@@ -400,13 +405,46 @@ func convertUpstream(tenantID, id, name, protocolName string, rawConfig []byte) 
 		item.SOAPOperation = stringValue(cfg["soapOperation"])
 		item.SOAPNamespace = stringValue(cfg["soapNamespace"])
 		item.SOAPResponsePath = stringValue(cfg["soapResponsePath"])
+	case graphql.Name:
+		item.BaseURL = stringValue(cfg["baseUrl"])
+		item.GraphQLPath = stringValue(cfg["path"])
+		item.GraphQLOperation = stringValue(cfg["operationName"])
+		item.GraphQLQuery = stringValue(cfg["query"])
+	case webhook.Name:
+		item.BaseURL = stringValue(cfg["baseUrl"])
+		item.WebhookPath = stringValue(cfg["path"])
+		item.WebhookMethod = strings.ToUpper(stringValue(cfg["method"]))
+		item.WebhookSecret = stringValue(cfg["secret"])
+		item.WebhookEventType = stringValue(cfg["eventType"])
 	default:
 		return upstream.Upstream{}, fmt.Errorf("unsupported upstream protocol %q", protocolName)
 	}
 	if item.BaseURL == "" {
 		return upstream.Upstream{}, fmt.Errorf("upstream %s baseUrl is required", id)
 	}
+	switch protocolName {
+	case graphql.Name:
+		if item.GraphQLQuery == "" {
+			return upstream.Upstream{}, fmt.Errorf("upstream %s graphql query is required", id)
+		}
+	case webhook.Name:
+		if item.WebhookMethod == "" {
+			item.WebhookMethod = "POST"
+		}
+	}
 	return item, nil
+}
+
+func validateRouteProtocols(item route.Route) error {
+	if !strings.EqualFold(item.InboundProtocol, restprotocol.Name) {
+		return fmt.Errorf("unsupported inbound protocol %q", item.InboundProtocol)
+	}
+	switch strings.ToLower(strings.TrimSpace(item.OutboundProtocol)) {
+	case restprotocol.Name, iso8583.Name, soapxml.Name, graphql.Name, webhook.Name:
+		return nil
+	default:
+		return fmt.Errorf("unsupported outbound protocol %q", item.OutboundProtocol)
+	}
 }
 
 func convertTemplate(tenantID, id, productID, name, source, target string, version int, status string, rawBody []byte, publishedAt *time.Time, createdAt, updatedAt time.Time) (transform.Template, error) {

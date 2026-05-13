@@ -225,6 +225,96 @@ Important runtime sync checks:
 - Disabled routes, upstreams, credentials, and tenants are excluded or rejected.
 - Invalid database state does not replace the last known good gateway snapshot.
 
+## Sprint 20 Adapter Proofs: GraphQL + Webhook
+
+Start two local upstream stubs:
+
+Terminal 3 (GraphQL):
+
+```sh
+cat <<'EOF' > /tmp/graphql_stub.py
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"data":{"authorizationCode":"A12345","responseCode":"00"}}')
+HTTPServer(("127.0.0.1", 9101), H).serve_forever()
+EOF
+python3 /tmp/graphql_stub.py
+```
+
+Terminal 4 (Webhook):
+
+```sh
+cat <<'EOF' > /tmp/webhook_stub.py
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ok":true}')
+HTTPServer(("127.0.0.1", 9102), H).serve_forever()
+EOF
+python3 /tmp/webhook_stub.py
+```
+
+Create GraphQL upstream and route:
+
+```sh
+GRAPHQL_UPSTREAM_ID=$(curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/upstreams" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d '{"name":"graphql-proof","protocol":"graphql","config":{"baseUrl":"http://127.0.0.1:9101","path":"/graphql","query":"query Authorize($amount:Int!){authorize(amount:$amount){authorizationCode responseCode}}","operationName":"Authorize"}}' | jq -r '.id')
+GRAPHQL_ROUTE_ID=$(curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d "{\"apiProductId\":\"$API_PRODUCT_ID\",\"name\":\"GraphQL Proof\",\"inboundProtocol\":\"rest\",\"outboundProtocol\":\"graphql\",\"host\":\"api.local.test\",\"method\":\"POST\",\"path\":\"/graphql-proof\",\"upstreamId\":\"$GRAPHQL_UPSTREAM_ID\"}" | jq -r '.id')
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes/$GRAPHQL_ROUTE_ID/publish" -H 'Authorization: Bearer dev-admin-token'
+```
+
+Create webhook upstream and route:
+
+```sh
+WEBHOOK_UPSTREAM_ID=$(curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/upstreams" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d '{"name":"webhook-proof","protocol":"webhook","config":{"baseUrl":"http://127.0.0.1:9102","path":"/events","method":"POST","eventType":"payment.authorized","secret":"dev-secret"}}' | jq -r '.id')
+WEBHOOK_ROUTE_ID=$(curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d "{\"apiProductId\":\"$API_PRODUCT_ID\",\"name\":\"Webhook Proof\",\"inboundProtocol\":\"rest\",\"outboundProtocol\":\"webhook\",\"host\":\"api.local.test\",\"method\":\"POST\",\"path\":\"/webhook-proof\",\"upstreamId\":\"$WEBHOOK_UPSTREAM_ID\"}" | jq -r '.id')
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes/$WEBHOOK_ROUTE_ID/publish" -H 'Authorization: Bearer dev-admin-token'
+```
+
+Call both routes via gateway:
+
+```sh
+curl -i "http://localhost:8080/graphql-proof" -H 'Host: api.local.test' -H "Authorization: ApiKey $API_KEY" -H 'Content-Type: application/json' -d '{"amount":10000}'
+curl -i "http://localhost:8080/webhook-proof" -H 'Host: api.local.test' -H "Authorization: ApiKey $API_KEY" -H 'Content-Type: application/json' -d '{"paymentId":"pay_1"}'
+```
+
+Adapter config validation checks:
+
+```sh
+# Fails because GraphQL query is mandatory.
+curl -i -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/upstreams" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d '{"name":"bad-graphql","protocol":"graphql","config":{"baseUrl":"http://127.0.0.1:9101"}}'
+```
+
+Failed adapter call emits usage + metrics:
+
+```sh
+# Stop webhook stub, then call the route again:
+curl -i "http://localhost:8080/webhook-proof" -H 'Host: api.local.test' -H "Authorization: ApiKey $API_KEY" -H 'Content-Type: application/json' -d '{"paymentId":"pay_2"}'
+
+# Usage event shows failed + billable:
+curl -sS "http://localhost:8081/admin/v1/tenants/$TENANT_ID/usage?targetProtocol=webhook&status=failed" \
+  -H 'Authorization: Bearer dev-admin-token'
+
+# Metrics include protocol adapter upstream error:
+curl -sS http://localhost:8080/metrics | grep syra_gateway_protocol_adapter_errors_total
+```
+
 For focused automated verification, run:
 
 ```sh

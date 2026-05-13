@@ -354,6 +354,10 @@ func (h *Handler) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "validation_error", "name and protocol are required")
 		return
 	}
+	if err := validateUpstreamConfig(req.Protocol, req.Config); err != nil {
+		writeError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 	if req.Status == "" {
 		req.Status = StatusActive
 	}
@@ -407,6 +411,10 @@ func (h *Handler) updateUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Status != nil {
 		item.Status = *req.Status
+	}
+	if err := validateUpstreamConfig(item.Protocol, item.Config); err != nil {
+		writeError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
 	}
 	item.UpdatedAt = h.now()
 	if err := h.store.UpdateUpstream(r.Context(), item); err != nil {
@@ -579,6 +587,10 @@ func (h *Handler) createRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "validation_error", "apiProductId, name, protocols, host, method, path, and upstreamId are required")
 		return
 	}
+	if err := validateRouteProtocols(req.InboundProtocol, req.OutboundProtocol); err != nil {
+		writeError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 	now := h.now()
 	req.ID = ids.New()
 	req.TenantID = tenantID
@@ -641,6 +653,10 @@ func (h *Handler) updateRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	patchRoute(&item, req)
+	if err := validateRouteProtocols(item.InboundProtocol, item.OutboundProtocol); err != nil {
+		writeError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 	item.UpdatedAt = h.now()
 	if err := h.store.UpdateRoute(r.Context(), item); err != nil {
 		writeInternal(w, r, err)
@@ -666,6 +682,21 @@ func (h *Handler) setRouteStatus(w http.ResponseWriter, r *http.Request, status 
 		return
 	}
 	item.Status = status
+	if status == StatusActive {
+		if err := validateRouteProtocols(item.InboundProtocol, item.OutboundProtocol); err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+		up, err := h.store.GetUpstream(r.Context(), tenantID, item.UpstreamID)
+		if err != nil {
+			writeStoreError(w, r, err)
+			return
+		}
+		if err := validateRouteUpstreamCompatibility(item, up); err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+	}
 	item.UpdatedAt = h.now()
 	if err := h.store.UpdateRoute(r.Context(), item); err != nil {
 		writeInternal(w, r, err)

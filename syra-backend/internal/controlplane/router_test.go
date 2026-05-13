@@ -283,6 +283,85 @@ func TestPlatformAdminCanManageAllTenants(t *testing.T) {
 	postJSON[APIProduct](t, router, "/admin/v1/tenants/"+tenantB+"/api-products", `{"name":"B Product","slug":"b-product"}`)
 }
 
+func TestRoutePublishValidatesGraphQLAndWebhookConfigs(t *testing.T) {
+	router, _ := newTestRouter()
+	tenantID := createTenant(t, router)
+	product := postJSON[APIProduct](t, router, "/admin/v1/tenants/"+tenantID+"/api-products", `{"name":"Payments","slug":"payments"}`)
+
+	graphqlUpstream := postJSON[Upstream](t, router, "/admin/v1/tenants/"+tenantID+"/upstreams", `{
+		"name":"graphql-core",
+		"protocol":"graphql",
+		"config":{"baseUrl":"https://graphql.example.com","path":"/graphql","query":"query Ping { ping }","operationName":"Ping"}
+	}`)
+	graphqlRoute := postJSON[Route](t, router, "/admin/v1/tenants/"+tenantID+"/routes", `{
+		"apiProductId":"`+product.ID+`",
+		"name":"GraphQL facade",
+		"inboundProtocol":"rest",
+		"outboundProtocol":"graphql",
+		"host":"api.gateway.example.com",
+		"method":"POST",
+		"path":"/graphql-facade",
+		"upstreamId":"`+graphqlUpstream.ID+`"
+	}`)
+	publishedGraphQL := requestJSON[Route](t, router, http.MethodPost, "/admin/v1/tenants/"+tenantID+"/routes/"+graphqlRoute.ID+"/publish", `{}`, http.StatusOK)
+	require.Equal(t, StatusActive, publishedGraphQL.Status)
+
+	webhookUpstream := postJSON[Upstream](t, router, "/admin/v1/tenants/"+tenantID+"/upstreams", `{
+		"name":"webhook-outbound",
+		"protocol":"webhook",
+		"config":{"baseUrl":"https://hooks.example.com","path":"/events","method":"POST","eventType":"payment.authorized","secret":"topsecret"}
+	}`)
+	webhookRoute := postJSON[Route](t, router, "/admin/v1/tenants/"+tenantID+"/routes", `{
+		"apiProductId":"`+product.ID+`",
+		"name":"Webhook fanout",
+		"inboundProtocol":"rest",
+		"outboundProtocol":"webhook",
+		"host":"api.gateway.example.com",
+		"method":"POST",
+		"path":"/events/fanout",
+		"upstreamId":"`+webhookUpstream.ID+`"
+	}`)
+	publishedWebhook := requestJSON[Route](t, router, http.MethodPost, "/admin/v1/tenants/"+tenantID+"/routes/"+webhookRoute.ID+"/publish", `{}`, http.StatusOK)
+	require.Equal(t, StatusActive, publishedWebhook.Status)
+}
+
+func TestRoutePublishRejectsInvalidAdapterConfig(t *testing.T) {
+	router, _ := newTestRouter()
+	tenantID := createTenant(t, router)
+	product := postJSON[APIProduct](t, router, "/admin/v1/tenants/"+tenantID+"/api-products", `{"name":"Payments","slug":"payments"}`)
+
+	rec := httptest.NewRecorder()
+	req := newAdminRequest(http.MethodPost, "/admin/v1/tenants/"+tenantID+"/upstreams", `{
+		"name":"bad-graphql",
+		"protocol":"graphql",
+		"config":{"baseUrl":"https://graphql.example.com"}
+	}`)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "config.query is required for graphql")
+
+	webhookUpstream := postJSON[Upstream](t, router, "/admin/v1/tenants/"+tenantID+"/upstreams", `{
+		"name":"webhook-outbound",
+		"protocol":"webhook",
+		"config":{"baseUrl":"https://hooks.example.com","path":"/events","method":"POST"}
+	}`)
+	routeItem := postJSON[Route](t, router, "/admin/v1/tenants/"+tenantID+"/routes", `{
+		"apiProductId":"`+product.ID+`",
+		"name":"wrong-protocol",
+		"inboundProtocol":"rest",
+		"outboundProtocol":"graphql",
+		"host":"api.gateway.example.com",
+		"method":"POST",
+		"path":"/wrong",
+		"upstreamId":"`+webhookUpstream.ID+`"
+	}`)
+	rec = httptest.NewRecorder()
+	req = newAdminRequest(http.MethodPost, "/admin/v1/tenants/"+tenantID+"/routes/"+routeItem.ID+"/publish", `{}`)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "must match upstream protocol")
+}
+
 func TestAuditLogReadFilters(t *testing.T) {
 	router, store := newTestRouter()
 	tenantID := createTenant(t, router)

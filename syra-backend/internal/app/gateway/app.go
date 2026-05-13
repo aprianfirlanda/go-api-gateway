@@ -22,9 +22,11 @@ import (
 	"syra-backend/internal/observability"
 	"syra-backend/internal/ports/output"
 	"syra-backend/internal/protocol"
+	"syra-backend/internal/protocol/graphql"
 	"syra-backend/internal/protocol/iso8583"
 	restprotocol "syra-backend/internal/protocol/rest"
 	"syra-backend/internal/protocol/soapxml"
+	"syra-backend/internal/protocol/webhook"
 	"syra-backend/internal/runtime/state"
 	"syra-backend/internal/storage/postgres"
 	storageredis "syra-backend/internal/storage/redis"
@@ -55,6 +57,12 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 	}
 	soapAdapter := soapxml.NewAdapter(nil)
 	if err := adapterRegistry.RegisterUpstream(soapAdapter); err != nil {
+		return nil, err
+	}
+	if err := adapterRegistry.RegisterUpstream(graphql.NewAdapter(nil)); err != nil {
+		return nil, err
+	}
+	if err := adapterRegistry.RegisterUpstream(webhook.NewAdapter(nil)); err != nil {
 		return nil, err
 	}
 	credentialStore := auth.NewInMemoryCredentialStore()

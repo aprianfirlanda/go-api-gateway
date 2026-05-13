@@ -139,7 +139,7 @@ func (a *Adapter) Call(ctx context.Context, target protocol.UpstreamTarget, msg 
 		return protocol.CanonicalMessage{}, fmt.Errorf("build upstream request: %w", err)
 	}
 
-	copyForwardHeaders(req.Header, msg.Headers)
+	CopyForwardHeaders(req.Header, msg.Headers)
 
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -207,7 +207,7 @@ func joinPath(basePath string, requestPath string) string {
 	return basePath + requestPath
 }
 
-func copyForwardHeaders(dst http.Header, src http.Header) {
+func CopyForwardHeaders(dst http.Header, src http.Header) {
 	for name, values := range src {
 		if !IsForwardedRequestHeader(name) {
 			continue
