@@ -50,11 +50,20 @@ HTTP_READ_TIMEOUT=5s
 HTTP_WRITE_TIMEOUT=30s
 HTTP_IDLE_TIMEOUT=60s
 REQUEST_BODY_LIMIT_BYTES=1048576
+RUNTIME_STATE_BACKEND=memory
+RUNTIME_STATE_ENV=dev
+RUNTIME_STATE_VERSION=v1
+REDIS_TIMEOUT=2s
 ```
 
-`REDIS_ADDR` is reserved for later distributed runtime features such as replay
-protection, shared rate limiting, and quota counters. The current MVP code does
-not require Redis to run.
+Redis is optional by default (`RUNTIME_STATE_BACKEND=memory`). Set
+`RUNTIME_STATE_BACKEND=redis` to enable Redis-backed runtime state storage and
+readiness checks:
+
+```text
+REDIS_ADDR=localhost:6379
+RUNTIME_STATE_BACKEND=redis
+```
 
 When `DATABASE_URL` is set, the gateway loads runtime config from PostgreSQL at
 startup and reloads it on the `CONFIG_RELOAD_INTERVAL` schedule.

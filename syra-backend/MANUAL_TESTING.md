@@ -34,14 +34,19 @@ export CONTROL_PLANE_ADMIN_TOKEN='dev-admin-token'
 The control plane can also run without `DATABASE_URL`; it will use the in-memory
 store. Use PostgreSQL for manual testing that should survive a process restart.
 
-Redis is included in `compose.yaml` for planned distributed features, but the
-current MVP code does not use it yet. Start it only when working on the later
-replay-protection, rate-limit, or quota-counter sprints:
+Redis is used when runtime state backend is set to `redis`:
 
 ```sh
 docker compose up -d redis
 export REDIS_ADDR='localhost:6379'
+export REDIS_TIMEOUT='2s'
+export RUNTIME_STATE_BACKEND='redis'
+export RUNTIME_STATE_ENV='local'
+export RUNTIME_STATE_VERSION='v1'
 ```
+
+If `RUNTIME_STATE_BACKEND` is left as `memory` (default), Redis is not required
+and readiness does not check Redis.
 
 ## Start Services
 
@@ -228,6 +233,7 @@ go test ./internal/gateway/listener/iso8583 -run TestISO8583InboundFlow
 go test ./internal/protocol/soapxml -run Test
 go test ./internal/billing -run Test
 go test ./internal/storage/postgres -run RuntimeConfigSync -v
+go test ./internal/runtime/state -v
 ```
 
 These tests cover:
@@ -242,6 +248,7 @@ These tests cover:
 - Billing summary and overage calculation
 - Rate-limit, quota, IP allowlist, and request-size policy behavior
 - PostgreSQL runtime config reload validation and last-known-good fallback
+- Redis and in-memory runtime state store behavior (set/get/increment/expire/delete/cas)
 - Prometheus metrics and trace hooks
 
 ## PostgreSQL Repository Checks

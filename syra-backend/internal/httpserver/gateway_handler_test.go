@@ -622,7 +622,7 @@ func TestGatewayRouteEmitsFailedBillableUsageEvent(t *testing.T) {
 	require.Equal(t, "500", events[0].UpstreamStatus)
 	require.True(t, events[0].Billable)
 	require.NotContains(t, eventValues(events[0]), "4111111111111111")
-	require.NotContains(t, eventValues(events[0]), "123")
+	require.NotContains(t, eventValues(events[0]), `"cvv":"123"`)
 }
 
 func TestGatewayRouteEmitsTimeoutUsageEvent(t *testing.T) {

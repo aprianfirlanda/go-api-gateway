@@ -24,6 +24,7 @@ type Metrics struct {
 	protocolAdapterErrors *prometheus.CounterVec
 	iso8583Timeouts       *prometheus.CounterVec
 	billingEventFailures  *prometheus.CounterVec
+	redisOperations       *prometheus.CounterVec
 }
 
 func NewMetrics() *Metrics {
@@ -46,8 +47,9 @@ func NewMetrics() *Metrics {
 		protocolAdapterErrors: counter("protocol_adapter_errors_total", "Protocol adapter errors.", "protocol", "stage"),
 		iso8583Timeouts:       counter("iso8583_timeouts_total", "ISO8583 timeout errors.", "tenant_id", "route_id"),
 		billingEventFailures:  counter("billing_event_failures_total", "Billing usage event write failures.", "tenant_id", "route_id"),
+		redisOperations:       counter("redis_operations_total", "Redis runtime state operations.", "operation", "status"),
 	}
-	m.registry.MustRegister(m.requests, m.requestLatency, m.authFailures, m.rateLimitRejects, m.quotaRejects, m.protocolAdapterErrors, m.iso8583Timeouts, m.billingEventFailures)
+	m.registry.MustRegister(m.requests, m.requestLatency, m.authFailures, m.rateLimitRejects, m.quotaRejects, m.protocolAdapterErrors, m.iso8583Timeouts, m.billingEventFailures, m.redisOperations)
 	return m
 }
 
@@ -120,4 +122,15 @@ func (m *Metrics) IncBillingEventFailure(tenantID, routeID string) {
 	if m != nil {
 		m.billingEventFailures.WithLabelValues(tenantID, routeID).Inc()
 	}
+}
+
+func (m *Metrics) ObserveRedis(operation string, success bool) {
+	if m == nil {
+		return
+	}
+	status := "error"
+	if success {
+		status = "success"
+	}
+	m.redisOperations.WithLabelValues(operation, status).Inc()
 }

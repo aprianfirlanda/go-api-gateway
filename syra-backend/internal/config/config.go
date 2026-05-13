@@ -12,6 +12,10 @@ type Config struct {
 	ControlPlaneAdminToken string
 	DatabaseURL            string
 	RedisAddr              string
+	RedisTimeout           time.Duration
+	RuntimeStateBackend    string
+	RuntimeStateEnv        string
+	RuntimeStateVersion    string
 	LogLevel               string
 	ReadTimeout            time.Duration
 	WriteTimeout           time.Duration
@@ -28,6 +32,10 @@ func Load() Config {
 		ControlPlaneAdminToken: getenv("CONTROL_PLANE_ADMIN_TOKEN", "dev-admin-token"),
 		DatabaseURL:            getenv("DATABASE_URL", ""),
 		RedisAddr:              getenv("REDIS_ADDR", "localhost:6379"),
+		RedisTimeout:           getenvDuration("REDIS_TIMEOUT", 2*time.Second),
+		RuntimeStateBackend:    getenv("RUNTIME_STATE_BACKEND", "memory"),
+		RuntimeStateEnv:        getenv("RUNTIME_STATE_ENV", "dev"),
+		RuntimeStateVersion:    getenv("RUNTIME_STATE_VERSION", "v1"),
 		LogLevel:               getenv("LOG_LEVEL", "info"),
 		ReadTimeout:            getenvDuration("HTTP_READ_TIMEOUT", 5*time.Second),
 		WriteTimeout:           getenvDuration("HTTP_WRITE_TIMEOUT", 30*time.Second),
