@@ -57,7 +57,7 @@ func TestReadyzReturnsUnavailableWhenDependencyFails(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	require.JSONEq(t, `{"status":"not_ready"}`, rec.Body.String())
+	require.JSONEq(t, `{"status":"not_ready","error":"db down"}`, rec.Body.String())
 }
 
 func TestRequestIDMiddlewarePreservesInboundRequestID(t *testing.T) {

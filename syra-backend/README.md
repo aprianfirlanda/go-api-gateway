@@ -38,6 +38,12 @@ Control plane:
 go run ./cmd/control-plane
 ```
 
+Run migrations:
+
+```sh
+go run ./cmd/migrate
+```
+
 ## Configuration
 
 Configuration is loaded from environment variables:
@@ -68,10 +74,18 @@ RUNTIME_STATE_BACKEND=redis
 When `DATABASE_URL` is set, the gateway loads runtime config from PostgreSQL at
 startup and reloads it on the `CONFIG_RELOAD_INTERVAL` schedule.
 
+Gateway readiness depends on:
+
+- PostgreSQL (if configured)
+- Redis (when `RUNTIME_STATE_BACKEND=redis`)
+- runtime config load success status
+
 ## Structure
 
 ```text
 cmd/gateway              service entrypoint
+cmd/control-plane        control plane entrypoint
+cmd/migrate              migration command
 internal/app/gateway     dependency wiring
 internal/config          environment configuration
 internal/health          health use case
@@ -80,10 +94,27 @@ internal/ports           input and output interfaces
 internal/storage         database adapters
 pkg                      small reusable helpers
 migrations               Goose SQL migrations
+deploy/k8s               Kubernetes deployment skeleton
+runbooks                 operator runbooks
+scripts/load             load test scripts
 ```
 
 ## Verify
 
 ```sh
 go test ./...
+```
+
+## Container Build
+
+```sh
+docker build -f Dockerfile.gateway -t syra/gateway:local .
+docker build -f Dockerfile.control-plane -t syra/control-plane:local .
+docker build -f Dockerfile.migrator -t syra/migrator:local .
+```
+
+## Local Multi-Service Compose
+
+```sh
+docker compose -f compose.prod.yaml up --build
 ```

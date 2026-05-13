@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: syra-gateway-config
+  namespace: syra-gateway
+data:
+  GATEWAY_ADDR: ":8080"
+  CONTROL_PLANE_ADDR: ":8081"
+  CONFIG_RELOAD_INTERVAL: "5s"
+  RUNTIME_STATE_BACKEND: "redis"
+  RUNTIME_STATE_ENV: "prod"
+  RUNTIME_STATE_VERSION: "v1"

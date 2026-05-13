@@ -384,7 +384,7 @@ func (r *ControlPlaneRepository) CreateRoute(ctx context.Context, route controlp
 			status, created_at, updated_at
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
-	`, route.ID, route.TenantID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, route.RequiredScopes, route.HMACEnabled, nullableString(route.HMACSecret), route.ReplayWindowSec, route.IdempotencyEnabled, route.IdempotencyTTLSec, route.Status, route.CreatedAt, route.UpdatedAt)
+	`, route.ID, route.TenantID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, stringSliceOrEmpty(route.RequiredScopes), route.HMACEnabled, nullableString(route.HMACSecret), route.ReplayWindowSec, route.IdempotencyEnabled, route.IdempotencyTTLSec, route.Status, route.CreatedAt, route.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -418,7 +418,7 @@ func (r *ControlPlaneRepository) UpdateRoute(ctx context.Context, route controlp
 			hmac_secret = $18, replay_window_sec = $19, idempotency_enabled = $20, idempotency_ttl_sec = $21,
 			status = $22, updated_at = $23
 		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
-	`, route.TenantID, route.ID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, route.RequiredScopes, route.HMACEnabled, nullableString(route.HMACSecret), route.ReplayWindowSec, route.IdempotencyEnabled, route.IdempotencyTTLSec, route.Status, route.UpdatedAt)
+	`, route.TenantID, route.ID, route.APIProductID, route.Name, route.InboundProtocol, route.OutboundProtocol, nullableString(route.Host), nullableString(route.Method), nullableString(route.Path), route.UpstreamID, nullableString(route.TransformationTemplateID), nullableString(route.RateLimitPolicyID), nullableString(route.QuotaPolicyID), route.Priority, route.TimeoutMs, stringSliceOrEmpty(route.RequiredScopes), route.HMACEnabled, nullableString(route.HMACSecret), route.ReplayWindowSec, route.IdempotencyEnabled, route.IdempotencyTTLSec, route.Status, route.UpdatedAt)
 	if err := rowsAffected(tag, err); err != nil {
 		return err
 	}
@@ -445,7 +445,7 @@ func (r *ControlPlaneRepository) CreateCredential(ctx context.Context, credentia
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO credentials (id, tenant_id, consumer_id, type, key_prefix, secret_hash, scopes, status, expires_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, credential.ID, credential.TenantID, credential.ConsumerID, credential.Type, nullableString(credential.KeyPrefix), nullableString(credential.SecretHash), credential.Scopes, credential.Status, credential.ExpiresAt, credential.CreatedAt, credential.UpdatedAt)
+	`, credential.ID, credential.TenantID, credential.ConsumerID, credential.Type, nullableString(credential.KeyPrefix), nullableString(credential.SecretHash), stringSliceOrEmpty(credential.Scopes), credential.Status, credential.ExpiresAt, credential.CreatedAt, credential.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -465,7 +465,7 @@ func (r *ControlPlaneRepository) UpdateCredential(ctx context.Context, credentia
 		UPDATE credentials
 		SET key_prefix = $3, secret_hash = $4, scopes = $5, status = $6, expires_at = $7, updated_at = $8
 		WHERE tenant_id = $1 AND id = $2
-	`, credential.TenantID, credential.ID, nullableString(credential.KeyPrefix), nullableString(credential.SecretHash), credential.Scopes, credential.Status, credential.ExpiresAt, credential.UpdatedAt)
+	`, credential.TenantID, credential.ID, nullableString(credential.KeyPrefix), nullableString(credential.SecretHash), stringSliceOrEmpty(credential.Scopes), credential.Status, credential.ExpiresAt, credential.UpdatedAt)
 	if err := rowsAffected(tag, err); err != nil {
 		return err
 	}
@@ -728,6 +728,13 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func stringSliceOrEmpty(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func stringPtr(value string) *string {

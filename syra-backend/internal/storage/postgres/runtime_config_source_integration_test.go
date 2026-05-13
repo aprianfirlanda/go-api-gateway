@@ -185,6 +185,7 @@ func TestRuntimeConfigSyncKeepsLastKnownGoodOnInvalidDatabaseState(t *testing.T)
 
 	manager, router := newReloadManagerWithRouter(pool)
 	require.NoError(t, manager.Reload(ctx))
+	loadedVersion := manager.Current().Version
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://api.local.test/accounts", nil)
@@ -199,7 +200,7 @@ func TestRuntimeConfigSyncKeepsLastKnownGoodOnInvalidDatabaseState(t *testing.T)
 	require.NoError(t, repo.UpdateUpstream(ctx, upstreamItem))
 
 	require.Error(t, manager.Reload(ctx))
-	require.Equal(t, int64(1), manager.Current().Version)
+	require.Equal(t, loadedVersion, manager.Current().Version)
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "http://api.local.test/accounts", nil)

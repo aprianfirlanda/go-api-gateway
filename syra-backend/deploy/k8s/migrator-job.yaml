@@ -1,0 +1,16 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: syra-migrator
+  namespace: syra-gateway
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrator
+          image: syra/migrator:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: syra-gateway-secret

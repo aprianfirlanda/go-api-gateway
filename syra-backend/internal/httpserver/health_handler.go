@@ -26,7 +26,10 @@ func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
 
 func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
 	if err := h.service.Readiness(r.Context()); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "not_ready",
+			"error":  err.Error(),
+		})
 		return
 	}
 

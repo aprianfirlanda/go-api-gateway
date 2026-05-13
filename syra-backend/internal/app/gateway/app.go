@@ -118,6 +118,7 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		Quotas:      runtimePolicies,
 	}, logger)
 	_ = reloadManager.Reload(context.Background())
+	pingers = append(pingers, runtimeconfig.NewPinger(reloadManager))
 
 	router := httpserver.NewRouter(httpserver.Dependencies{
 		Logger:          logger,

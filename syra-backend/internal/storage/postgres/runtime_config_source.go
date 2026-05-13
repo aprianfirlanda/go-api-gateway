@@ -357,6 +357,7 @@ func (s *RuntimeConfigSource) loadActiveCredentials(ctx context.Context, tenantS
 		FROM credentials c
 		LEFT JOIN tenants t ON t.id = c.tenant_id
 		LEFT JOIN consumers cons ON cons.id = c.consumer_id
+		WHERE c.status = 'active'
 	`)
 	if err != nil {
 		return nil, err

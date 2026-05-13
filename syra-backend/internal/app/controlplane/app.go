@@ -13,6 +13,9 @@ import (
 	"syra-backend/internal/billing"
 	"syra-backend/internal/config"
 	cp "syra-backend/internal/controlplane"
+	"syra-backend/internal/health"
+	"syra-backend/internal/httpserver"
+	"syra-backend/internal/ports/output"
 	"syra-backend/internal/storage/postgres"
 )
 
@@ -34,11 +37,20 @@ func New(cfg config.Config, logger *slog.Logger) (*App, error) {
 		Store:              store,
 		UsageEvents:        usageEvents,
 	})
+	pingers := []output.DBPinger{}
+	if pool != nil {
+		pingers = append(pingers, postgres.NewPinger(pool))
+	}
+	healthHandler := httpserver.NewHealthHandler(health.NewService(health.NewMultiPinger(pingers...)))
+	root := http.NewServeMux()
+	root.HandleFunc("/healthz", healthHandler.Liveness)
+	root.HandleFunc("/readyz", healthHandler.Readiness)
+	root.Handle("/", router)
 
 	return &App{
 		Server: &http.Server{
 			Addr:         cfg.ControlPlaneAddr,
-			Handler:      router,
+			Handler:      root,
 			ReadTimeout:  cfg.ReadTimeout,
 			WriteTimeout: cfg.WriteTimeout,
 			IdleTimeout:  cfg.IdleTimeout,
