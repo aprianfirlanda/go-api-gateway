@@ -1,0 +1,359 @@
+# Syra Backend Manual Testing Guide
+
+This guide covers building the backend, running the automated suite, starting the
+gateway and control plane locally, and manually smoke testing the MVP features.
+
+## Prerequisites
+
+- Go 1.25.9
+- Docker Desktop or a compatible Docker runtime
+- `curl`
+- Optional: `jq` for extracting IDs from JSON responses
+
+All commands below run from `backend/`.
+
+## Build and Automated Tests
+
+```sh
+cd backend
+go test ./...
+go build ./cmd/gateway ./cmd/control-plane
+```
+
+The PostgreSQL repository integration tests use testcontainers, so Docker must
+be running before `go test ./...`.
+
+## Start Local Dependencies
+
+```sh
+docker compose up -d postgres
+export DATABASE_URL='postgres://app:app@localhost:5432/app?sslmode=disable'
+export CONTROL_PLANE_ADMIN_TOKEN='dev-admin-token'
+```
+
+The control plane can also run without `DATABASE_URL`; it will use the in-memory
+store. Use PostgreSQL for manual testing that should survive a process restart.
+
+Redis is used when runtime state backend is set to `redis`:
+
+```sh
+docker compose up -d redis
+export REDIS_ADDR='localhost:6379'
+export REDIS_TIMEOUT='2s'
+export RUNTIME_STATE_BACKEND='redis'
+export RUNTIME_STATE_ENV='local'
+export RUNTIME_STATE_VERSION='v1'
+```
+
+If `RUNTIME_STATE_BACKEND` is left as `memory` (default), Redis is not required
+and readiness does not check Redis.
+
+## Start Services
+
+Terminal 1:
+
+```sh
+cd backend
+go run ./cmd/control-plane
+```
+
+Terminal 2:
+
+```sh
+cd backend
+export CONFIG_RELOAD_INTERVAL=3s
+go run ./cmd/gateway
+```
+
+Defaults:
+
+- Gateway: `http://localhost:8080`
+- Control plane: `http://localhost:8081`
+- Admin bearer token: `dev-admin-token`
+
+## Smoke Test the Running Processes
+
+```sh
+curl -i http://localhost:8080/healthz
+curl -i http://localhost:8080/readyz
+curl -i http://localhost:8080/metrics
+
+curl -i \
+  -H 'Authorization: Bearer dev-admin-token' \
+  http://localhost:8081/admin/v1/tenants
+```
+
+Expected results:
+
+- `/healthz` returns `200`.
+- `/readyz` returns `200` when dependencies are healthy.
+- `/metrics` returns Prometheus text including `syra_gateway_requests_total`.
+- Control plane calls without the bearer token return `401`.
+
+## Manual Control Plane Flow
+
+Create a tenant:
+
+```sh
+curl -sS -X POST http://localhost:8081/admin/v1/tenants \
+  -H 'Authorization: Bearer dev-admin-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Acme Finance","slug":"acme","billingPlanId":"starter"}'
+```
+
+Save the returned `id` as `TENANT_ID`.
+
+Create an API product:
+
+```sh
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/api-products" \
+  -H 'Authorization: Bearer dev-admin-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Payments","slug":"payments","description":"Payments APIs"}'
+```
+
+Save the returned `id` as `API_PRODUCT_ID`.
+
+Create an HTTP upstream:
+
+```sh
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/upstreams" \
+  -H 'Authorization: Bearer dev-admin-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Echo","protocol":"rest","config":{"baseUrl":"http://localhost:9000"},"status":"active"}'
+```
+
+Save the returned `id` as `UPSTREAM_ID`.
+
+Create and publish a route:
+
+```sh
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes" \
+  -H 'Authorization: Bearer dev-admin-token' \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"apiProductId\":\"$API_PRODUCT_ID\",
+    \"name\":\"Create Payment\",
+    \"inboundProtocol\":\"rest\",
+    \"outboundProtocol\":\"rest\",
+    \"host\":\"api.local.test\",
+    \"method\":\"POST\",
+    \"path\":\"/payments\",
+    \"upstreamId\":\"$UPSTREAM_ID\",
+    \"timeoutMs\":1000
+  }"
+```
+
+Save the returned `id` as `ROUTE_ID`, then publish:
+
+```sh
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes/$ROUTE_ID/publish" \
+  -H 'Authorization: Bearer dev-admin-token'
+```
+
+Create a consumer and API key:
+
+```sh
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/consumers" \
+  -H 'Authorization: Bearer dev-admin-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Mobile App","slug":"mobile-app","ownerUserId":"user-1"}'
+```
+
+Save the returned `id` as `CONSUMER_ID`.
+
+```sh
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/consumers/$CONSUMER_ID/credentials" \
+  -H 'Authorization: Bearer dev-admin-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"api_key","scopes":["payments:write"]}'
+```
+
+Save the returned `apiKey`. The plaintext API key is only returned once.
+
+## Transformation Template Flow
+
+Create a draft template:
+
+```sh
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/transformation-templates" \
+  -H 'Authorization: Bearer dev-admin-token' \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"apiProductId\":\"$API_PRODUCT_ID\",
+    \"name\":\"Payment REST passthrough\",
+    \"sourceProtocol\":\"rest\",
+    \"targetProtocol\":\"rest\",
+    \"templateBody\":{\"request\":{\"body\":{\"amount\":\"$.amount\"}},\"response\":{\"body\":{\"status\":\"$.status\"}}}
+  }"
+```
+
+Save the returned `id` as `TEMPLATE_ID`, then publish:
+
+```sh
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/transformation-templates/$TEMPLATE_ID/publish" \
+  -H 'Authorization: Bearer dev-admin-token'
+```
+
+Published templates can be attached to active routes. Draft, disabled, or
+archived templates are rejected by the gateway runtime.
+
+## Runtime Gateway Feature Checks
+
+Start a simple upstream to receive gateway traffic:
+
+```sh
+python3 -m http.server 9000
+```
+
+Then call the gateway with the API key returned from credential creation:
+
+```sh
+curl -i "http://localhost:8080/payments" \
+  -H 'Host: api.local.test' \
+  -H "Authorization: ApiKey $API_KEY"
+```
+
+The gateway loads runtime config from PostgreSQL on startup and reloads it
+periodically based on `CONFIG_RELOAD_INTERVAL`. Create and publish routes in the
+control plane, then wait for one reload interval and call the gateway again.
+
+Important runtime sync checks:
+
+- Active routes are loaded without hard-coded gateway config.
+- Routes that reference transformations require published templates.
+- Disabled routes, upstreams, credentials, and tenants are excluded or rejected.
+- Invalid database state does not replace the last known good gateway snapshot.
+
+## Sprint 20 Adapter Proofs: GraphQL + Webhook
+
+Start two local upstream stubs:
+
+Terminal 3 (GraphQL):
+
+```sh
+cat <<'EOF' > /tmp/graphql_stub.py
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"data":{"authorizationCode":"A12345","responseCode":"00"}}')
+HTTPServer(("127.0.0.1", 9101), H).serve_forever()
+EOF
+python3 /tmp/graphql_stub.py
+```
+
+Terminal 4 (Webhook):
+
+```sh
+cat <<'EOF' > /tmp/webhook_stub.py
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ok":true}')
+HTTPServer(("127.0.0.1", 9102), H).serve_forever()
+EOF
+python3 /tmp/webhook_stub.py
+```
+
+Create GraphQL upstream and route:
+
+```sh
+GRAPHQL_UPSTREAM_ID=$(curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/upstreams" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d '{"name":"graphql-proof","protocol":"graphql","config":{"baseUrl":"http://127.0.0.1:9101","path":"/graphql","query":"query Authorize($amount:Int!){authorize(amount:$amount){authorizationCode responseCode}}","operationName":"Authorize"}}' | jq -r '.id')
+GRAPHQL_ROUTE_ID=$(curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d "{\"apiProductId\":\"$API_PRODUCT_ID\",\"name\":\"GraphQL Proof\",\"inboundProtocol\":\"rest\",\"outboundProtocol\":\"graphql\",\"host\":\"api.local.test\",\"method\":\"POST\",\"path\":\"/graphql-proof\",\"upstreamId\":\"$GRAPHQL_UPSTREAM_ID\"}" | jq -r '.id')
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes/$GRAPHQL_ROUTE_ID/publish" -H 'Authorization: Bearer dev-admin-token'
+```
+
+Create webhook upstream and route:
+
+```sh
+WEBHOOK_UPSTREAM_ID=$(curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/upstreams" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d '{"name":"webhook-proof","protocol":"webhook","config":{"baseUrl":"http://127.0.0.1:9102","path":"/events","method":"POST","eventType":"payment.authorized","secret":"dev-secret"}}' | jq -r '.id')
+WEBHOOK_ROUTE_ID=$(curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d "{\"apiProductId\":\"$API_PRODUCT_ID\",\"name\":\"Webhook Proof\",\"inboundProtocol\":\"rest\",\"outboundProtocol\":\"webhook\",\"host\":\"api.local.test\",\"method\":\"POST\",\"path\":\"/webhook-proof\",\"upstreamId\":\"$WEBHOOK_UPSTREAM_ID\"}" | jq -r '.id')
+curl -sS -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/routes/$WEBHOOK_ROUTE_ID/publish" -H 'Authorization: Bearer dev-admin-token'
+```
+
+Call both routes via gateway:
+
+```sh
+curl -i "http://localhost:8080/graphql-proof" -H 'Host: api.local.test' -H "Authorization: ApiKey $API_KEY" -H 'Content-Type: application/json' -d '{"amount":10000}'
+curl -i "http://localhost:8080/webhook-proof" -H 'Host: api.local.test' -H "Authorization: ApiKey $API_KEY" -H 'Content-Type: application/json' -d '{"paymentId":"pay_1"}'
+```
+
+Adapter config validation checks:
+
+```sh
+# Fails because GraphQL query is mandatory.
+curl -i -X POST "http://localhost:8081/admin/v1/tenants/$TENANT_ID/upstreams" \
+  -H 'Authorization: Bearer dev-admin-token' -H 'Content-Type: application/json' \
+  -d '{"name":"bad-graphql","protocol":"graphql","config":{"baseUrl":"http://127.0.0.1:9101"}}'
+```
+
+Failed adapter call emits usage + metrics:
+
+```sh
+# Stop webhook stub, then call the route again:
+curl -i "http://localhost:8080/webhook-proof" -H 'Host: api.local.test' -H "Authorization: ApiKey $API_KEY" -H 'Content-Type: application/json' -d '{"paymentId":"pay_2"}'
+
+# Usage event shows failed + billable:
+curl -sS "http://localhost:8081/admin/v1/tenants/$TENANT_ID/usage?targetProtocol=webhook&status=failed" \
+  -H 'Authorization: Bearer dev-admin-token'
+
+# Metrics include protocol adapter upstream error:
+curl -sS http://localhost:8080/metrics | grep syra_gateway_protocol_adapter_errors_total
+```
+
+For focused automated verification, run:
+
+```sh
+go test ./internal/httpserver -run 'Gateway|Billing|SOAP|ISO|Transformation|Policy'
+go test ./internal/gateway/listener/iso8583 -run TestISO8583InboundFlow
+go test ./internal/protocol/soapxml -run Test
+go test ./internal/billing -run Test
+go test ./internal/storage/postgres -run RuntimeConfigSync -v
+go test ./internal/runtime/state -v
+```
+
+These tests cover:
+
+- Authenticated REST gateway routing
+- REST to REST proxying
+- REST to ISO8583 outbound calls
+- ISO8583 inbound listener to REST route flow
+- REST to SOAP/XML request and SOAP/XML response mapping
+- Transformation masking and published-template enforcement
+- Billing events for success, rejected, failed, and timeout attempts
+- Billing summary and overage calculation
+- Rate-limit, quota, IP allowlist, and request-size policy behavior
+- PostgreSQL runtime config reload validation and last-known-good fallback
+- Redis and in-memory runtime state store behavior (set/get/increment/expire/delete/cas)
+- Prometheus metrics and trace hooks
+
+## PostgreSQL Repository Checks
+
+Run the repository integration suite with Docker running:
+
+```sh
+go test ./internal/storage/postgres -v
+```
+
+The initial migration lives in `migrations/00001_initial_schema.sql` and is based
+on the MVP data model.
+
+## Stop Local Services
+
+```sh
+docker compose down
+```
