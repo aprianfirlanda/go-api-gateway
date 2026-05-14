@@ -9,30 +9,27 @@ This plan covers:
 - Nextra manuals (installation, admin, admin tenant)
 - MCP server to interact with the app
 
+## Current Baseline
+
+- `frontend/` is already initialized with Vite + React.
+- `docs/nextra/` is already initialized with Nextra.
+- This plan focuses on feature implementation and hardening, not project bootstrap.
+
 ## Sprint 1: Frontend Foundation and App Shell
 
 ### Goals
 
-- initialize frontend app structure
 - add routing, auth boundary, shared API client, base layout
 - define role-based navigation (`platform_admin`, `tenant_admin`)
 
 ### Tasks and Exact Targets
 
-- Create frontend app scaffold:
-  - `frontend/package.json`
-  - `frontend/tsconfig.json`
-  - `frontend/next.config.*` or `frontend/vite.config.*` (choose one stack, document choice)
-  - `frontend/.env.example`
 - Create app shell:
-  - `frontend/src/app/layout.tsx` (or equivalent)
-  - `frontend/src/app/page.tsx`
-  - `frontend/src/app/(admin)/layout.tsx`
-  - `frontend/src/app/(tenant)/layout.tsx`
+  - `frontend/src/App.tsx` and `frontend/src/main.tsx` (or existing entry files)
+  - `frontend/src/routes/*` (role-based route setup)
 - Create auth and RBAC gate:
   - `frontend/src/lib/auth.ts`
   - `frontend/src/lib/rbac.ts`
-  - `frontend/src/middleware.ts` (if using Next middleware)
 - Create API client:
   - `frontend/src/lib/api/client.ts`
   - `frontend/src/lib/api/types.ts`
@@ -119,22 +116,19 @@ This plan covers:
 ### Goals
 
 - provide useful public page
-- start Nextra documentation app and information architecture
+- define Nextra documentation information architecture
 
 ### Tasks and Exact Targets
 
 - Public pages:
-  - `frontend/src/app/page.tsx` (public entry)
-  - `frontend/src/app/status/page.tsx`
+  - `frontend/src/pages/PublicHome.tsx` (or equivalent route component)
+  - `frontend/src/pages/PublicStatus.tsx` (or equivalent route component)
   - `frontend/src/components/public/SystemStatus.tsx`
   - `frontend/src/components/public/OnboardingChecklist.tsx`
 - Optional public status API proxy:
-  - `frontend/src/app/api/status/route.ts`
+  - `frontend/src/lib/api/status.ts`
   - `backend/internal/httpserver/health_handler.go` (only if extra data needed)
-- Nextra skeleton:
-  - `docs/nextra/package.json`
-  - `docs/nextra/next.config.*`
-  - `docs/nextra/theme.config.*`
+- Nextra docs IA/pages:
   - `docs/nextra/pages/index.mdx`
   - `docs/nextra/pages/manuals/index.mdx`
 
@@ -248,4 +242,3 @@ This plan covers:
 - Do not log PAN/CVV/PIN/API keys/tokens/secrets.
 - Keep protocol-specific logic behind adapter interfaces.
 - Keep docs in sync with shipped behavior each sprint.
-

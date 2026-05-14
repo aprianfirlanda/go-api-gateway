@@ -19,6 +19,7 @@ Read first:
 
 Rules:
 - Keep implementation inside backend/, frontend/, and docs/.
+- Frontend (Vite React) and docs (Nextra) are already initialized; do not reinitialize.
 - Keep tenant isolation explicit in APIs, repositories, and tests.
 - Never log PAN/CVV/PIN/API keys/tokens/secrets.
 - Add or update tests for every behavior change.
@@ -37,17 +38,10 @@ Scope:
 - Routing, auth boundary, RBAC gate, API client, shared UI primitives.
 
 Exact targets to create/update:
-- frontend/package.json
-- frontend/tsconfig.json
-- frontend/next.config.* or frontend/vite.config.* (choose one and document)
-- frontend/.env.example
-- frontend/src/app/layout.tsx (or equivalent)
-- frontend/src/app/page.tsx
-- frontend/src/app/(admin)/layout.tsx
-- frontend/src/app/(tenant)/layout.tsx
+- frontend/src/App.tsx and frontend/src/main.tsx (or existing entry files)
+- frontend/src/routes/* (role-based route setup)
 - frontend/src/lib/auth.ts
 - frontend/src/lib/rbac.ts
-- frontend/src/middleware.ts (if using Next)
 - frontend/src/lib/api/client.ts
 - frontend/src/lib/api/types.ts
 - frontend/src/lib/api/errors.ts
@@ -149,22 +143,19 @@ Implement Sprint 4 from docs/markdown/NEXT_MVP_PLAN.md.
 
 Scope:
 - Build useful public pages.
-- Initialize Nextra docs app skeleton.
+- Build Nextra docs information architecture/pages on top of existing setup.
 
 Frontend targets:
-- frontend/src/app/page.tsx
-- frontend/src/app/status/page.tsx
+- frontend/src/pages/PublicHome.tsx (or equivalent route component)
+- frontend/src/pages/PublicStatus.tsx (or equivalent route component)
 - frontend/src/components/public/SystemStatus.tsx
 - frontend/src/components/public/OnboardingChecklist.tsx
-- frontend/src/app/api/status/route.ts (optional proxy)
+- frontend/src/lib/api/status.ts (optional helper)
 
 Backend target (only if necessary for richer status):
 - backend/internal/httpserver/health_handler.go
 
 Docs/Nextra targets:
-- docs/nextra/package.json
-- docs/nextra/next.config.*
-- docs/nextra/theme.config.*
 - docs/nextra/pages/index.mdx
 - docs/nextra/pages/manuals/index.mdx
 
@@ -330,4 +321,3 @@ Targets:
 
 Run go test ./... from backend/.
 ```
-
