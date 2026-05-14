@@ -131,6 +131,7 @@ func TestGatewayRouteProxiesAuthenticatedRequestToUpstream(t *testing.T) {
 	var upstreamAllowedHeader string
 	var upstreamAuthHeader string
 	var upstreamAPIKeyHeader string
+	var upstreamAdminAPIKeyHeader string
 	var upstreamConnectionHeader string
 
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +141,7 @@ func TestGatewayRouteProxiesAuthenticatedRequestToUpstream(t *testing.T) {
 		upstreamAllowedHeader = r.Header.Get("X-Partner-Trace")
 		upstreamAuthHeader = r.Header.Get("Authorization")
 		upstreamAPIKeyHeader = r.Header.Get("X-API-Key")
+		upstreamAdminAPIKeyHeader = r.Header.Get("X-Admin-Api-Key")
 		upstreamConnectionHeader = r.Header.Get("Connection")
 
 		w.Header().Set("Content-Type", "application/json")
@@ -156,6 +158,7 @@ func TestGatewayRouteProxiesAuthenticatedRequestToUpstream(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://api.example.test/accounts?limit=10", nil)
 	req.Header.Set("Authorization", "ApiKey gw_live_tenant_1.secret")
 	req.Header.Set("X-Partner-Trace", "trace-1")
+	req.Header.Set("X-Admin-Api-Key", "admin-secret")
 	req.Header.Set("Connection", "upgrade")
 	req.Header.Set("Upgrade", "websocket")
 
@@ -173,6 +176,7 @@ func TestGatewayRouteProxiesAuthenticatedRequestToUpstream(t *testing.T) {
 	require.Equal(t, "trace-1", upstreamAllowedHeader)
 	require.Empty(t, upstreamAuthHeader)
 	require.Empty(t, upstreamAPIKeyHeader)
+	require.Empty(t, upstreamAdminAPIKeyHeader)
 	require.Empty(t, upstreamConnectionHeader)
 }
 

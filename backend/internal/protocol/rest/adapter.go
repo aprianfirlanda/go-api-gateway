@@ -224,7 +224,7 @@ func IsForwardedRequestHeader(name string) bool {
 	}
 
 	switch http.CanonicalHeaderKey(name) {
-	case "Authorization", "Proxy-Authorization", "X-Api-Key":
+	case "Authorization", "Proxy-Authorization", "X-Api-Key", "X-Admin-Api-Key", "X-Mcp-Token":
 		return false
 	default:
 		return true

@@ -51,3 +51,22 @@
 ### Expected Result
 
 - Authorized users can access allowed endpoints only.
+
+## MCP Tool Authorization Failures
+
+### Symptom
+
+- `401 unauthorized` or `403 forbidden` on `/mcp/tools/*`.
+
+### Checks
+
+1. Verify MCP server auth token (`MCP_AUTH_TOKEN`) and request header (`X-MCP-Token`).
+2. For tenant-scoped tool usage, set:
+   - `X-MCP-Role: tenant_admin`
+   - `X-MCP-Tenant-ID: <tenant_id>`
+3. Ensure `tenantId` request parameter/body matches tenant-admin tenant context.
+
+### Expected Result
+
+- Platform admin can access global MCP tools.
+- Tenant admin is blocked from cross-tenant operations.

@@ -26,6 +26,32 @@ docker compose -f compose.prod.yaml ps
 Authorization: Bearer <token>
 ```
 
+## MCP auth fails (`401 unauthorized`)
+
+1. Verify `MCP_AUTH_TOKEN` is set for `cmd/mcp-server`.
+2. Send either:
+```sh
+X-MCP-Token: <token>
+```
+or:
+```sh
+Authorization: Bearer <token>
+```
+3. Check MCP health endpoint first:
+```sh
+curl -i http://localhost:8082/healthz
+```
+
+## Tenant admin MCP access denied (`403 forbidden`)
+
+1. Confirm role and tenant context headers:
+```sh
+X-MCP-Role: tenant_admin
+X-MCP-Tenant-ID: <tenant_id>
+```
+2. Ensure the requested tool tenant matches `X-MCP-Tenant-ID`.
+3. Use platform admin role only for global/list-all operations.
+
 ## Shutdown handling
 
 Graceful shutdown waits for in-flight requests up to `SHUTDOWN_TIMEOUT`. Increase timeout for long-running upstream calls.

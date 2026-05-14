@@ -429,6 +429,32 @@ func TestAdminAPIKeyAuthentication(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rec.Code)
 }
 
+func TestTenantAdminCannotAccessPlatformOnlyEndpoints(t *testing.T) {
+	store := NewStore()
+	secretHash, err := auth.HashSecret("secret")
+	require.NoError(t, err)
+	router := NewRouter(RouterConfig{
+		Store: store,
+		AdminAuthenticator: StaticAdminAuthenticator{
+			APIKeys: []AdminAPIKey{{
+				ActorID:    "tenant-admin-1",
+				Role:       RoleTenantAdmin,
+				TenantID:   "tenant_1",
+				KeyPrefix:  "adm_live_tenant_1",
+				SecretHash: secretHash,
+			}},
+		},
+	})
+
+	for _, path := range []string{"/admin/v1/tenants", "/admin/v1/billing-plans"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "ApiKey adm_live_tenant_1.secret")
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusForbidden, rec.Code, "path=%s body=%s", path, rec.Body.String())
+	}
+}
+
 func newTestRouter() (http.Handler, *Store) {
 	store := NewStore()
 	router := NewRouter(RouterConfig{

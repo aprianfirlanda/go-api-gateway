@@ -237,6 +237,79 @@ func TestRuntimeConfigSyncLoadsPersistedPolicies(t *testing.T) {
 	require.Equal(t, quota.ID, snapshot.Routes[0].QuotaPolicyID)
 }
 
+func TestRuntimeConfigSyncMaintainsTenantIsolationOnSharedHostAndPath(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPostgresPool(t, ctx)
+	repo := NewControlPlaneRepository(pool)
+	now := time.Date(2026, 5, 13, 10, 0, 0, 0, time.UTC)
+
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"tenant":"a"}`)
+	}))
+	t.Cleanup(upstreamA.Close)
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"tenant":"b"}`)
+	}))
+	t.Cleanup(upstreamB.Close)
+
+	tenantA, productA, upstreamIDa := seedTenantProductUpstream(t, ctx, repo, now, upstreamA.URL)
+	tenantB, productB, upstreamIDb := seedTenantProductUpstream(t, ctx, repo, now, upstreamB.URL)
+	keyA := createCredential(t, ctx, repo, now, tenantA, auth.StatusActive)
+	keyB := createCredential(t, ctx, repo, now, tenantB, auth.StatusActive)
+
+	require.NoError(t, repo.CreateRoute(ctx, controlplane.Route{
+		ID:               ids.New(),
+		TenantID:         tenantA,
+		APIProductID:     productA,
+		Name:             "tenant-a-route",
+		InboundProtocol:  restprotocol.Name,
+		OutboundProtocol: restprotocol.Name,
+		Host:             "shared.host.test",
+		Method:           http.MethodGet,
+		Path:             "/accounts",
+		UpstreamID:       upstreamIDa,
+		Priority:         100,
+		TimeoutMs:        1000,
+		Status:           controlplane.StatusActive,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}))
+	require.NoError(t, repo.CreateRoute(ctx, controlplane.Route{
+		ID:               ids.New(),
+		TenantID:         tenantB,
+		APIProductID:     productB,
+		Name:             "tenant-b-route",
+		InboundProtocol:  restprotocol.Name,
+		OutboundProtocol: restprotocol.Name,
+		Host:             "shared.host.test",
+		Method:           http.MethodGet,
+		Path:             "/accounts",
+		UpstreamID:       upstreamIDb,
+		Priority:         100,
+		TimeoutMs:        1000,
+		Status:           controlplane.StatusActive,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}))
+
+	manager, router := newReloadManagerWithRouter(pool)
+	require.NoError(t, manager.Reload(ctx))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://shared.host.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey "+keyA)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"tenant":"a"}`, rec.Body.String())
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "http://shared.host.test/accounts", nil)
+	req.Header.Set("Authorization", "ApiKey "+keyB)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"tenant":"b"}`, rec.Body.String())
+}
+
 func seedTenantProductUpstream(t *testing.T, ctx context.Context, repo *ControlPlaneRepository, now time.Time, upstreamBaseURL string) (string, string, string) {
 	t.Helper()
 	tenant := controlplane.Tenant{

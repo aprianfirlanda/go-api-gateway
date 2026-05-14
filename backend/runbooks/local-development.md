@@ -36,3 +36,18 @@ go run ./cmd/gateway
 curl -i http://localhost:8081/readyz
 curl -i http://localhost:8080/readyz
 ```
+
+## 6) Start MCP server
+
+```sh
+export MCP_AUTH_TOKEN='dev-mcp-token'
+go run ./cmd/mcp-server
+```
+
+## 7) Verify MCP auth + tool health
+
+```sh
+curl -i http://localhost:8082/healthz
+curl -i -H 'X-MCP-Token: dev-mcp-token' http://localhost:8082/mcp
+curl -i -H 'X-MCP-Token: dev-mcp-token' http://localhost:8082/mcp/tools/list-tenants
+```
