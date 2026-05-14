@@ -1,0 +1,27 @@
+# Manage Tenants
+
+## Prerequisites
+
+- Control plane is running.
+- You are using `platform_admin` role in frontend.
+
+## Steps
+
+1. Open `Admin > Tenants`.
+2. Click **Load Tenants**.
+3. In **Create Tenant**, fill:
+   - `Name`
+   - `Slug`
+4. Click **Create**.
+5. In tenant list, click **Set Active** on the target tenant.
+
+## Expected Result
+
+- Tenant appears in table.
+- Active tenant is set and reused by Admin API Products, Routes, Credentials, and Billing pages.
+
+## Troubleshooting
+
+- `401 unauthorized`: check admin token/key.
+- `403 forbidden`: ensure role is `platform_admin`.
+- Empty list: create first tenant.

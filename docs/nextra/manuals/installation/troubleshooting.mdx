@@ -1,0 +1,53 @@
+# Troubleshooting
+
+## Service Not Starting
+
+### Symptom
+
+- `go run` exits with config or bind error.
+
+### Checks
+
+1. Confirm ports are free (`8080`, `8081`).
+2. Check required env vars.
+3. Confirm dependency services (PostgreSQL/Redis if enabled).
+
+### Expected Result
+
+- Service starts and logs listening address.
+
+## Frontend Cannot Reach API
+
+### Symptom
+
+- Public status shows service as unhealthy.
+- Admin/Tenant page API calls fail.
+
+### Checks
+
+1. Confirm backend services are running.
+2. Verify frontend env values:
+   - `VITE_API_BASE_URL`
+   - `VITE_GATEWAY_BASE_URL`
+   - `VITE_CONTROL_PLANE_BASE_URL`
+3. Check browser network errors (CORS, DNS, refused connection).
+
+### Expected Result
+
+- API requests return JSON and pages display data.
+
+## Admin Authorization Failures
+
+### Symptom
+
+- `401` or `403` on `/admin/v1` APIs.
+
+### Checks
+
+1. For platform flows, verify `Authorization: Bearer dev-admin-token` or valid admin key.
+2. For tenant flows, verify `VITE_TENANT_ADMIN_API_KEY` is configured to a tenant-admin credential.
+3. Ensure tenant admin is calling the correct tenant path.
+
+### Expected Result
+
+- Authorized users can access allowed endpoints only.

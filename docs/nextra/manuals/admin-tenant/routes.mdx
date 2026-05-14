@@ -1,0 +1,21 @@
+# Tenant Routes
+
+## Prerequisites
+
+- Role is `tenant_admin`.
+- Tenant admin identity includes tenant ID.
+
+## Steps
+
+1. Open `Tenant > Routes`.
+2. Click **Load Routes**.
+
+## Expected Result
+
+- Only routes for the tenant-admin tenant are shown.
+- No tenant selector is available.
+
+## Authorization Behavior
+
+- Cross-tenant path access should return `403`.
+- UI surfaces backend authorization errors directly.

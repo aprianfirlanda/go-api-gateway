@@ -1,0 +1,37 @@
+# Basic Deployment
+
+This is a minimal reference flow for non-local deployment.
+
+## Build and Test Backend
+
+```bash
+cd backend
+go test ./...
+go build ./cmd/gateway
+go build ./cmd/control-plane
+```
+
+## Build Frontend
+
+```bash
+cd frontend
+npm install
+npm run lint
+npm run build
+```
+
+## Container/Kubernetes References
+
+- Dockerfiles are in `backend/`.
+- Kubernetes manifests are in `backend/deploy/k8s/`.
+
+## Runtime Configuration Notes
+
+- Control plane token defaults to `dev-admin-token` for development.
+- Use environment variables for production credentials and addresses.
+- Do not expose development bootstrap credentials in public environments.
+
+## Expected Result
+
+- Services start with environment-specific configuration.
+- Health and readiness endpoints are routable.

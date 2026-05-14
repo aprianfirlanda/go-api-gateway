@@ -1,0 +1,48 @@
+# Local Setup
+
+## 1) Start Backend Services
+
+From repository root:
+
+```bash
+cd backend
+go run ./cmd/gateway
+```
+
+Open a second terminal:
+
+```bash
+cd backend
+go run ./cmd/control-plane
+```
+
+## 2) Verify Health
+
+```bash
+curl -i http://localhost:8080/healthz
+curl -i http://localhost:8080/readyz
+curl -i http://localhost:8081/healthz
+curl -i http://localhost:8081/readyz
+```
+
+## 3) Start Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## 4) Open Console
+
+- Open the Vite URL shown in terminal (typically `http://localhost:5173`).
+- Use role switcher in top bar:
+  - `public`
+  - `platform_admin`
+  - `tenant_admin`
+
+## Expected Result
+
+- Public pages load.
+- Admin pages call control-plane APIs.
+- Tenant pages are tenant-scoped and require tenant-admin role.

@@ -1,0 +1,36 @@
+# Billing and Audit
+
+## Billing Summary
+
+### Prerequisites
+
+- Active tenant is set.
+- Billing period exists or can be recalculated.
+
+### Steps
+
+1. Open `Admin > Billing`.
+2. Set billing period (`YYYY-MM`).
+3. Click **Load Summary**.
+4. If missing, click **Recalculate**.
+
+### Expected Result
+
+- Billing summary table displays request and amount fields.
+
+## Audit Logs
+
+### Steps
+
+1. Open `Admin > Audit Logs`.
+2. Click **Load Audit Logs**.
+3. Toggle **Scope to active tenant** if needed.
+
+### Expected Result
+
+- Audit events appear with actor, action, resource, and timestamp.
+
+## Troubleshooting
+
+- Missing logs: perform a create/update action first, then reload.
+- `401/403`: check admin auth role and credentials.

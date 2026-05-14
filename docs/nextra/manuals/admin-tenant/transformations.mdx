@@ -1,0 +1,28 @@
+# Tenant Transformations
+
+## Prerequisites
+
+- Role is `tenant_admin`.
+- Valid API product ID exists in the tenant.
+
+## Steps
+
+1. Open `Tenant > Transformations`.
+2. Fill template form:
+   - API Product ID
+   - Name
+   - Source Protocol
+   - Target Protocol
+   - Template Body JSON
+3. Click **Create Template**.
+4. Click **Load Templates**.
+
+## Expected Result
+
+- Newly created template appears in table.
+- Only tenant-owned templates are listed.
+
+## Troubleshooting
+
+- JSON parse error: fix template body format.
+- `403`: verify tenant-admin identity and tenant scope.

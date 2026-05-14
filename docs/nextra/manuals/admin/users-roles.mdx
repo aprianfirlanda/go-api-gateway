@@ -1,0 +1,21 @@
+# Users and Roles
+
+## Current Behavior
+
+The frontend includes `Admin > Users` page, but backend endpoint `/admin/v1/users` is not implemented in current runtime.
+
+## Steps
+
+1. Open `Admin > Users`.
+2. Observe endpoint status message.
+
+## Expected Result
+
+- Page clearly reports backend endpoint availability/error.
+- No fake/mock user data is shown.
+
+## Troubleshooting
+
+- If endpoint is later implemented, confirm:
+  - platform admin can list users
+  - tenant admin cannot use platform-only user endpoints

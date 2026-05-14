@@ -1,0 +1,43 @@
+# Manage API Products and Routes
+
+## Prerequisites
+
+- Active tenant is set from `Admin > Tenants`.
+- Role is `platform_admin`.
+
+## API Products
+
+### Steps
+
+1. Open `Admin > API Products`.
+2. Click **Load API Products**.
+3. Fill `Name` and `Slug`.
+4. Click **Create**.
+
+### Expected Result
+
+- New API product appears in list for active tenant.
+
+## Upstreams and Routes
+
+### Steps
+
+1. Open `Admin > Routes`.
+2. Click **Load Routes and Upstreams**.
+3. Create an upstream with `Name` and `Protocol`.
+4. Create a route with:
+   - `API Product ID`
+   - `Name`
+   - `Inbound/Outbound Protocol`
+   - `Host`, `Method`, `Path`
+   - `Upstream ID`
+
+### Expected Result
+
+- Upstream appears in upstream table.
+- Route appears in route table.
+
+## Troubleshooting
+
+- Validation errors: check required fields.
+- `403`: confirm platform admin role.

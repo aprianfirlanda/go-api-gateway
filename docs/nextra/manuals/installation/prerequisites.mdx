@@ -1,0 +1,28 @@
+# Prerequisites
+
+## Required Software
+
+- Go `1.25.9`
+- Node.js `20+` and npm
+- PostgreSQL `15+` (recommended)
+- Redis `7+` (optional for runtime state)
+
+## Required Access
+
+- Local terminal access
+- Ability to open ports `8080`, `8081`, and frontend dev port
+
+## Verify Installed Tools
+
+```bash
+go version
+node -v
+npm -v
+psql --version
+redis-server --version
+```
+
+## Expected Result
+
+- All commands return valid versions.
+- You can connect to PostgreSQL if using database-backed runtime config.
